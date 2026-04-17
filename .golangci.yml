@@ -1,0 +1,366 @@
+version: "2"
+
+run:
+  go: "1.26"
+  timeout: 10m
+  allow-parallel-runners: true
+  modules-download-mode: readonly
+  tests: false
+
+output:
+  formats:
+    text:
+      path: stdout
+      colors: true
+      print-issued-lines: true
+      print-linter-name: true
+  sort-order:
+    - linter
+    - severity
+    - file
+
+linters:
+  default: none
+  enable:
+    # Core essential linters
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+
+    # Code quality
+    - revive
+    - gocritic
+    - gocyclo
+    - dupl
+    - unconvert
+    - unparam
+
+    # Concurrency & correctness
+    - copyloopvar
+    - contextcheck
+    - durationcheck
+    - noctx
+
+    # Performance
+    - prealloc
+    - predeclared
+    - usestdlibvars
+
+    # Security
+    - gosec
+    - bodyclose
+
+    # Style & formatting
+    - misspell
+    - whitespace
+    - godot
+    - godox
+    
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+      settings:
+        shadow:
+          strict: true
+
+    staticcheck:
+      checks:
+        - all
+        - -SA1019 # allow deprecated for now
+
+    gocyclo:
+      min-complexity: 20
+
+    dupl:
+      threshold: 70 # Lowered for better code quality
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    misspell:
+      locale: US
+      ignore-rules:
+        - cancelled
+
+    lll:
+      line-length: 120
+      tab-width: 4
+
+    funlen:
+      lines: 60
+      statements: 40
+      ignore-comments: true
+
+    gocognit:
+      min-complexity: 25
+
+    gosec:
+      excludes:
+        - G107 # Potential HTTP request made with variable URL
+        - G404 # Use of weak random number generator
+      config:
+        global:
+          audit: "high" # Only show high-severity issues from other linters
+
+    revive:
+      severity: warning
+      confidence: 0.8
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+        - name: early-return
+        - name: defer
+        - name: get-return
+        - name: atomic
+        - name: deep-exit
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+        - experimental
+        - opinionated
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - paramTypeCombine
+        - unnamedResult
+      settings:
+        rangeExprCopy:
+          sizeThreshold: 512
+        underef:
+          skipRecvDeref: true
+
+    tagliatelle:
+      case:
+        use-field-name: true
+        rules:
+          json: snake
+          yaml: snake
+          toml: snake
+          xml: camel
+          bson: camel
+          avro: snake
+          mapstructure: camel
+
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "3"
+        - "4"
+      ignored-functions:
+        - "^time\\.Duration"
+        - "^os\\.(Open|Create)"
+        - "^make"
+        - "^new"
+        - "^.*\\.(Bind|Get|Set|Add|Sub|Mul|Div|Mod)"
+      ignored-files:
+        - ".*_test\\.go"
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - ".*_test\\.go"
+      - "^vendor/"
+      - "^\\.git/"
+      - "^\\.github/"
+      - "third_party/"
+      - "testdata/"
+      - "examples/"
+      - ".*\\.pb\\.go$"
+      - ".*\\.gen\\.go$"
+      - ".*_mock\\.go$"
+    rules:
+      # Package documentation
+      - linters:
+          - gocyclo
+          - errcheck
+          - gosec
+          - revive
+          - staticcheck
+          - gocritic
+          - godot
+        path: "_test\\.go"
+        text: "should have a package comment"
+
+      - linters:
+          - revive
+          - staticcheck
+        text: "should have a package comment"
+
+      - linters:
+          - revive
+          - staticcheck
+        text: "comment on exported"
+
+      - linters:
+          - revive
+        text: "error strings should not be capitalized"
+
+      - linters:
+          - revive
+        text: "don't use underscores in Go names"
+
+      - linters:
+          - revive
+        text: "avoid meaningless package names"
+
+      # Staticcheck exclusions
+      - linters:
+          - staticcheck
+        text: "ST1000:" # package comment
+      - linters:
+          - staticcheck
+        text: "ST1005:" # error strings
+      - linters:
+          - staticcheck
+        text: "SA1019:" # deprecated usage
+
+      # Test-specific exclusions
+      - path: "_test\\.go"
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - funlen
+          - goconst
+          - mnd
+          - gocognit
+          - exhaustruct
+          - wrapcheck
+
+      - path: "internal/.*_test\\.go"
+        linters:
+          - forbidigo
+
+      # Generated code
+      - linters:
+          - lll
+        source: "^//go:generate "
+
+      # Security exceptions for tests
+      - path: "_test\\.go"
+        text: "G404" # weak random number generator
+        linters:
+          - gosec
+
+      # Allow underscores in test names
+      - path: "_test\\.go"
+        text: "should not use underscores"
+        linters:
+          - revive
+
+      # Specific package exclusions
+      - path: "crypto/"
+        text: "G404"
+        linters:
+          - gosec
+
+      - path: "watch/"
+        text: "G115" # integer overflow conversion
+        linters:
+          - gosec
+
+      - path: "redis/redis\\.go"
+        linters:
+          - nlreturn
+
+      # Allow panic in certain scenarios
+      - path: "internal/panic/"
+        linters:
+          - forbidigo
+        text: "panic"
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+    - golines
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - blank
+        - dot
+        - alias
+        - localmodule
+      custom-order: true
+
+    gofmt:
+      simplify: true
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"
+        - pattern: "a[b:len(a)]"
+          replacement: "a[b:]"
+
+    gofumpt:
+      extra-rules: true
+      module-path: github.com/os-gomod/config
+
+    goimports:
+      local-prefixes:
+        - github.com/os-gomod/config
+
+    golines:
+      max-len: 120
+      tab-len: 4
+      shorten-comments: true
+
+  exclusions:
+    paths:
+      - "^vendor/"
+      - "^\\.git/"
+      - "^\\.github/"
+      - "third_party/"
+      - ".*\\.gen\\.go$"
+      - ".*\\.pb\\.go$"
+      - ".*_mock\\.go$"
