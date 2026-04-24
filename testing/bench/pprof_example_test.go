@@ -16,6 +16,9 @@ import (
 //
 //	go test -run=TestProfile_Reload -bench=. -benchmem -cpuprofile=cpu.prof -memprofile=mem.prof ./bench/
 func TestProfile_Reload(t *testing.T) {
+	// Skip by default - this is a profiling test, not a functional test
+	t.Skip("CPU profiling test - run manually with -run=TestProfile_Reload to profile")
+
 	// CPU profiling
 	f, err := os.Create("cpu.prof")
 	if err != nil {
@@ -26,6 +29,9 @@ func TestProfile_Reload(t *testing.T) {
 	}
 	defer func() {
 		pprof.StopCPUProfile()
+		if err := f.Sync(); err != nil {
+			t.Logf("error syncing profile: %v", err)
+		}
 		f.Close()
 	}()
 
