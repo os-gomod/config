@@ -8,7 +8,7 @@ import (
 
 func TestNats_New(t *testing.T) {
 	t.Run("with defaults", func(t *testing.T) {
-		p, err := New(Config{})
+		p, err := New(&Config{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -21,7 +21,7 @@ func TestNats_New(t *testing.T) {
 	})
 
 	t.Run("with custom values", func(t *testing.T) {
-		p, err := New(Config{
+		p, err := New(&Config{
 			URL:      "nats://10.0.0.1:4222",
 			Timeout:  10 * time.Second,
 			Bucket:   "config",
@@ -45,7 +45,7 @@ func TestNats_New(t *testing.T) {
 	})
 
 	t.Run("zero timeout gets default", func(t *testing.T) {
-		p, err := New(Config{Timeout: 0})
+		p, err := New(&Config{Timeout: 0})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -55,7 +55,7 @@ func TestNats_New(t *testing.T) {
 	})
 
 	t.Run("negative timeout gets default", func(t *testing.T) {
-		p, err := New(Config{Timeout: -1 * time.Second})
+		p, err := New(&Config{Timeout: -1 * time.Second})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestNats_New(t *testing.T) {
 }
 
 func TestNats_Name(t *testing.T) {
-	p, err := New(Config{})
+	p, err := New(&Config{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestNats_Name(t *testing.T) {
 }
 
 func TestNats_String(t *testing.T) {
-	p, err := New(Config{URL: "nats://10.0.0.1:4222"})
+	p, err := New(&Config{URL: "nats://10.0.0.1:4222"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestNats_String(t *testing.T) {
 
 func TestNats_Close(t *testing.T) {
 	t.Run("close succeeds", func(t *testing.T) {
-		p, err := New(Config{})
+		p, err := New(&Config{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -100,7 +100,7 @@ func TestNats_Close(t *testing.T) {
 	})
 
 	t.Run("close is idempotent", func(t *testing.T) {
-		p, err := New(Config{})
+		p, err := New(&Config{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -115,7 +115,7 @@ func TestNats_Close(t *testing.T) {
 
 func TestNats_EnsureOpen(t *testing.T) {
 	t.Run("not closed allows operations", func(t *testing.T) {
-		p, err := New(Config{})
+		p, err := New(&Config{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -127,7 +127,7 @@ func TestNats_EnsureOpen(t *testing.T) {
 	})
 
 	t.Run("closed returns error", func(t *testing.T) {
-		p, err := New(Config{})
+		p, err := New(&Config{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

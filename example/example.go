@@ -203,7 +203,7 @@ func demoBuilder() {
 			"db.host":     "db.prod.internal",
 			"db.port":     5432,
 		}).
-		Validate(validator.New()).
+		ValidateWith(validator.New()).
 		Build()
 	if err != nil {
 		if _, ok := err.(*config.ReloadWarning); !ok {
@@ -556,7 +556,7 @@ func demoPluginSystem() {
 	}
 	cfg, err := config.NewBuilder().
 		Memory(map[string]any{"app.name": "plugin-demo", "app.version": "1.0", "app.env": "development"}).
-		Validate(validator.New()).
+		Validate().
 		Plugin(p).
 		Build()
 	if err != nil {
@@ -749,7 +749,7 @@ func demoYAMLFileLoading() {
 		}, 10).
 		FileWithPriority(yamlPath, 30).
 		EnvWithPriority("APP_", 40).
-		Validate(validator.New()).
+		Validate().
 		Recorder(metrics).
 		OnReloadError(func(reloadErr error) {
 			slog.Warn("yaml demo: reload error", "err", reloadErr)
@@ -962,7 +962,7 @@ func demoEndToEnd() {
 			"feature.beta": false,
 		}).
 		EnvWithPriority("E2E_", 40).
-		Validate(validator.New()).
+		Validate().
 		Recorder(metrics).
 		OnReloadError(func(reloadErr error) {
 			slog.Warn("e2e: reload error", "err", reloadErr)

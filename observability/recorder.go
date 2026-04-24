@@ -32,6 +32,8 @@ type Recorder interface {
 	RecordValidation(ctx context.Context, dur time.Duration, err error)
 	// RecordWatchEvent records that a watch event was received from a source.
 	RecordWatchEvent(ctx context.Context, source string)
+	RecordSecretRedacted(ctx context.Context, source string)
+	RecordConfigChangeEvent(ctx context.Context, eventType, source string)
 }
 
 // NopRecorder is a no-op implementation of Recorder that discards all recordings.
@@ -53,3 +55,5 @@ func (NopRecorder) RecordHook(_ context.Context, _ string, _ time.Duration, _ er
 func (NopRecorder) RecordLayerLoad(_ context.Context, _ string, _ time.Duration, _ int, _ error) {}
 func (NopRecorder) RecordValidation(_ context.Context, _ time.Duration, _ error)                 {}
 func (NopRecorder) RecordWatchEvent(_ context.Context, _ string)                                 {}
+func (NopRecorder) RecordSecretRedacted(_ context.Context, _ string)                             {}
+func (NopRecorder) RecordConfigChangeEvent(_ context.Context, _, _ string)                       {}

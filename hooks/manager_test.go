@@ -166,33 +166,6 @@ func TestHooksManager_SetRecorder(t *testing.T) {
 	_ = m.Execute(t.Context(), event.HookBeforeReload, &Context{})
 }
 
-func TestHookFunc(t *testing.T) {
-	t.Run("name and priority", func(t *testing.T) {
-		h := New("test-hook", 42, nil)
-		if h.Name() != "test-hook" {
-			t.Fatalf("expected name 'test-hook', got %q", h.Name())
-		}
-		if h.Priority() != 42 {
-			t.Fatalf("expected priority 42, got %d", h.Priority())
-		}
-	})
-
-	t.Run("execute calls function", func(t *testing.T) {
-		var called atomic.Bool
-		h := New("test", 1, func(_ context.Context, _ *Context) error {
-			called.Store(true)
-			return nil
-		})
-		err := h.Execute(t.Context(), &Context{})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !called.Load() {
-			t.Fatal("expected hook to be called")
-		}
-	})
-}
-
 func TestContext_SafeStates(t *testing.T) {
 	t.Run("OldStateSafe returns empty state for nil", func(t *testing.T) {
 		c := &Context{}

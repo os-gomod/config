@@ -186,3 +186,59 @@ func (s *Store) Load(
 	}
 	return result, nil
 }
+
+// RotateKey re-encrypts all stored values with a new encryption key.
+// This is used for key rotation without losing any stored secrets.
+//
+// The process:
+//  1. Acquires the write lock to prevent concurrent modifications
+//  2. Decrypts all values with the current encryptor
+//  3. Swaps the encryptor to the new one
+//  4. Re-encrypts all values with the new encryptor
+//  5. Releases the lock
+//
+// If any decryption or re-encryption fails, the rotation is aborted
+// and the original encryptor remains in place. Returns an error
+// describing which key failed.
+//
+// Example:
+//
+//	newEnc, err := secure.NewAESGCMEncryptor(newKey)
+//	if err != nil {
+//	    return err
+//	}
+//	err = store.RotateKey(newEnc)
+func (s *Store) RotateKey(newEnc Encryptor) error {
+	if s.IsClosed() {
+		return configerrors.ErrClosed
+	}
+	if newEnc == nil {
+		return configerrors.New(configerrors.CodeInvalidConfig, "new encryptor must not be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Phase 1: Decrypt all values with the old key
+	plaintexts := make(map[string][]byte, len(s.data))
+	for k, ciphertext := range s.data {
+		plain, err := s.enc.Decrypt(ciphertext)
+		if err != nil {
+			return fmt.Errorf("secure: rotate key: decrypt %q: %w", k, err)
+		}
+		plaintexts[k] = plain
+	}
+
+	// Phase 2: Re-encrypt all values with the new key
+	for k, plain := range plaintexts {
+		encrypted, err := newEnc.Encrypt(plain)
+		if err != nil {
+			return fmt.Errorf("secure: rotate key: encrypt %q: %w", k, err)
+		}
+		s.data[k] = encrypted
+	}
+
+	// Phase 3: Swap the encryptor
+	s.enc = newEnc
+	return nil
+}

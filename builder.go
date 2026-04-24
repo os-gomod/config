@@ -13,17 +13,14 @@ import (
 )
 
 // Builder provides a fluent API for constructing a [Config] instance.
-// It offers convenience methods for registering common configuration sources
-// (files, environment variables, memory, remote providers) with sensible
-// default priorities, and supports optional features like file watching,
-// validation, strict reload mode, and observability.
+// It is an alternative to the functional options used by [New], offering
+// a more readable chain of method calls.
 //
-// # Example
+// Example:
 //
 //	cfg, err := config.NewBuilder().
 //	    File("config.yaml").
 //	    Env("APP").
-//	    Memory(map[string]any{"debug": true}).
 //	    Watch().
 //	    Build()
 type Builder struct {
@@ -38,45 +35,37 @@ type Builder struct {
 	plugins     []plugin.Plugin
 }
 
-// NewBuilder creates a new [Builder] with context.Background as the default
-// context.
+// NewBuilder creates a new Builder with sensible defaults.
 func NewBuilder() *Builder {
 	return &Builder{
 		ctx: context.Background(),
 	}
 }
 
-// WithContext sets the context used during [Build]. The same context is also
-// passed to file watchers if [Watch] is enabled.
+// WithContext sets the context used during Build. Defaults to context.Background().
 func (b *Builder) WithContext(ctx context.Context) *Builder {
 	b.ctx = ctx
 	return b
 }
 
-// File adds a file-based configuration source with a default priority of 30.
-// The file format is auto-detected from the extension (e.g., .json, .yaml).
+// File adds a file-based configuration source with [PriorityFile] priority.
 func (b *Builder) File(path string) *Builder {
-	return b.FileWithPriority(path, 30)
+	return b.FileWithPriority(path, PriorityFile)
 }
 
-// FileWithPriority adds a file-based configuration source with the specified
-// priority. Higher priority values take precedence over lower ones during
-// merging.
+// FileWithPriority adds a file-based configuration source with a custom priority.
 func (b *Builder) FileWithPriority(path string, priority int) *Builder {
 	fl := loader.NewFileLoader(path, loader.WithFilePriority(priority))
 	b.loaders = append(b.loaders, fl)
 	return b
 }
 
-// Env adds an environment-variable configuration source with the given prefix
-// and a default priority of 40. Only variables whose names start with the
-// prefix (case-insensitive) are loaded.
+// Env adds an environment variable source with the given prefix and [PriorityEnv] priority.
 func (b *Builder) Env(prefix string) *Builder {
-	return b.EnvWithPriority(prefix, 40)
+	return b.EnvWithPriority(prefix, PriorityEnv)
 }
 
-// EnvWithPriority adds an environment-variable configuration source with the
-// given prefix and priority.
+// EnvWithPriority adds an environment variable source with a custom priority.
 func (b *Builder) EnvWithPriority(prefix string, priority int) *Builder {
 	el := loader.NewEnvLoader(
 		loader.WithEnvPrefix(prefix),
@@ -86,14 +75,12 @@ func (b *Builder) EnvWithPriority(prefix string, priority int) *Builder {
 	return b
 }
 
-// Memory adds an in-memory configuration source with the given data and a
-// default priority of 20.
+// Memory adds an in-memory configuration source with [PriorityMemory] priority.
 func (b *Builder) Memory(data map[string]any) *Builder {
-	return b.MemoryWithPriority(data, 20)
+	return b.MemoryWithPriority(data, PriorityMemory)
 }
 
-// MemoryWithPriority adds an in-memory configuration source with the given
-// data and priority.
+// MemoryWithPriority adds an in-memory configuration source with a custom priority.
 func (b *Builder) MemoryWithPriority(data map[string]any, priority int) *Builder {
 	ml := loader.NewMemoryLoader(
 		loader.WithMemoryData(data),
@@ -103,10 +90,10 @@ func (b *Builder) MemoryWithPriority(data map[string]any, priority int) *Builder
 	return b
 }
 
-// Remote adds a remote configuration provider registered under the given name.
-// The cfg map is provider-specific configuration (e.g., endpoint URLs,
-// authentication tokens). If the provider cannot be created, the call is
-// silently ignored.
+// Remote adds a remote provider created from the provider registry by name.
+// If the provider factory is not found, the call is silently ignored.
+// Remote adds a remote provider created from the provider registry by name.
+// If the provider factory is not found, the call is silently ignored.
 func (b *Builder) Remote(name string, cfg map[string]any) *Builder {
 	p, err := provider.DefaultRegistry.Create(name, cfg)
 	if err != nil {
@@ -116,50 +103,59 @@ func (b *Builder) Remote(name string, cfg map[string]any) *Builder {
 	return b
 }
 
-// Watch enables real-time file watching for all registered loaders and
-// providers. When a source file changes, a debounced reload is triggered
-// automatically.
+// Watch enables file system and remote provider watching. When enabled,
+// the Build method starts goroutines that watch all sources for changes
+// and trigger automatic reloads.
+// Watch enables file system and remote provider watching. When enabled,
+// the Build method starts goroutines that watch all sources for changes
+// and trigger automatic reloads.
 func (b *Builder) Watch() *Builder {
 	b.watchEnable = true
 	return b
 }
 
-// Validate sets a custom validator used during struct binding.
-func (b *Builder) Validate(v validator.Validator) *Builder {
+// Validate sets a custom validator for post-binding validation.
+func (b *Builder) Validate() *Builder {
+	b.val = validator.New()
+	return b
+}
+
+func (b *Builder) ValidateWith(v validator.Validator) *Builder {
 	b.val = v
 	return b
 }
 
-// StrictReload enables strict reload mode. When enabled, [Build] returns an
-// error if any layer fails during the initial reload.
+// StrictReload enables strict reload mode where layer failures cause
+// the reload to return an error.
+// StrictReload enables strict reload mode where layer failures cause
+// the reload to return an error.
 func (b *Builder) StrictReload() *Builder {
 	b.strict = true
 	return b
 }
 
-// OnReloadError sets a custom handler invoked when a background watcher
-// triggers a reload that fails.
+// OnReloadError sets a custom error handler for background reload failures.
 func (b *Builder) OnReloadError(fn func(error)) *Builder {
 	b.onReloadErr = fn
 	return b
 }
 
-// Recorder sets an observability recorder for tracking configuration
-// operations.
+// Recorder sets the observability recorder for metrics collection.
 func (b *Builder) Recorder(r observability.Recorder) *Builder {
 	b.recorder = r
 	return b
 }
 
-// Plugin registers a plugin that will be initialized when [Build] is called.
+// Plugin adds a configuration plugin.
 func (b *Builder) Plugin(p plugin.Plugin) *Builder {
 	b.plugins = append(b.plugins, p)
 	return b
 }
 
-// Build constructs the [Config] instance from all registered sources and
-// options. If [Watch] was called, background watchers are started for all
-// loaders and providers that support watching.
+// Build creates a new [Config] from the accumulated builder options.
+// It performs an initial reload and returns an error if it fails.
+// Build creates a new [Config] from the accumulated builder options.
+// It performs an initial reload and returns an error if it fails.
 func (b *Builder) Build() (*Config, error) {
 	opts := []Option{
 		WithMaxWorkers(8),
@@ -217,9 +213,10 @@ func (b *Builder) MustBuild() *Config {
 	return c
 }
 
-// Bind builds the [Config] and immediately binds the current configuration
-// state to the given target struct. Returns both the Config and any bind
-// error.
+// Bind builds the Config and immediately binds the merged configuration
+// to the target struct. Returns an error if either Build or Bind fails.
+// Bind builds the Config and immediately binds the merged configuration
+// to the target struct. Returns an error if either Build or Bind fails.
 func (b *Builder) Bind(ctx context.Context, target any) (*Config, error) {
 	c, err := b.Build()
 	if err != nil {

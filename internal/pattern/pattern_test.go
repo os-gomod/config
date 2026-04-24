@@ -130,3 +130,73 @@ func TestMatch_EventBusStyle(t *testing.T) {
 		})
 	}
 }
+
+// ------------------------------------------------------------------
+// Match with no pattern (empty string matches all)
+// ------------------------------------------------------------------
+func TestMatch_NoPattern(t *testing.T) {
+	if !Match("anything", "") {
+		t.Error("empty pattern should match everything")
+	}
+	if !Match("", "") {
+		t.Error("empty pattern should match empty key")
+	}
+	if !Match("a.b.c", "") {
+		t.Error("empty pattern should match dotted key")
+	}
+}
+
+// ------------------------------------------------------------------
+// Edge cases
+// ------------------------------------------------------------------
+func TestMatch_EdgeCases(t *testing.T) {
+	// Empty key
+	if Match("", "nonempty") {
+		t.Error("empty key should not match non-empty pattern")
+	}
+
+	// ? matches one char, so it doesn't match empty string
+	if Match("", "??") {
+		t.Error("?? should not match empty key")
+	}
+
+	// Multiple wildcards
+	if !Match("a.b.c.d", "*.*.*.*") {
+		t.Error("expected match with multiple wildcards")
+	}
+
+	// Mixed wildcards
+	if !Match("a.b.c", "a.*.c") {
+		t.Error("expected match with mixed pattern")
+	}
+
+	// Pattern longer than key
+	if Match("ab", "abc") {
+		t.Error("pattern longer than key should not match")
+	}
+
+	// Key longer than pattern
+	if Match("abc", "ab") {
+		t.Error("key longer than pattern should not match")
+	}
+}
+
+func TestMatch_DottedPaths(t *testing.T) {
+	tests := []struct {
+		key  string
+		pat  string
+		want bool
+	}{
+		{"database.host", "database.*", true},
+		{"database.host.port", "database.*", true},
+		{"server.port", "database.*", false},
+		{"config.app.name", "config.*", true},
+		{"config", "config.*", false}, // dot wildcard needs at least one char after dot
+	}
+	for _, tt := range tests {
+		got := Match(tt.key, tt.pat)
+		if got != tt.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", tt.key, tt.pat, got, tt.want)
+		}
+	}
+}

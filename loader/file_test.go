@@ -267,3 +267,53 @@ func TestFileLoader_ValueSource(t *testing.T) {
 		t.Errorf("Source() = %d, want %d", v.Source(), value.SourceFile)
 	}
 }
+
+func TestComputeChecksum(t *testing.T) {
+	h1 := computeChecksum([]byte("hello"))
+	h2 := computeChecksum([]byte("hello"))
+	if h1 != h2 {
+		t.Error("same content should produce same checksum")
+	}
+	h3 := computeChecksum([]byte("world"))
+	if h1 == h3 {
+		t.Error("different content should produce different checksum")
+	}
+	if len(h1) != 16 {
+		t.Errorf("expected 16-char truncated checksum, got %d", len(h1))
+	}
+}
+
+func TestBaseWrapErr(t *testing.T) {
+	b := NewBase("test", "file", 0)
+	err := b.WrapErr(os.ErrNotExist, "read")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if b.WrapErr(nil, "read") != nil {
+		t.Error("expected nil for nil error")
+	}
+}
+
+func TestNewBase(t *testing.T) {
+	b := NewBase("test-name", "test-type", 55)
+	if b.Name() != "test-name" {
+		t.Errorf("expected name 'test-name', got %q", b.Name())
+	}
+	if b.Type() != "test-type" {
+		t.Errorf("expected type 'test-type', got %q", b.Type())
+	}
+	if b.Priority() != 55 {
+		t.Errorf("expected priority 55, got %d", b.Priority())
+	}
+	if b.String() != "test-name" {
+		t.Errorf("expected string 'test-name', got %q", b.String())
+	}
+}
+
+func TestBaseSetPriority(t *testing.T) {
+	b := NewBase("test", "test", 0)
+	b.SetPriority(99)
+	if b.Priority() != 99 {
+		t.Errorf("expected priority 99, got %d", b.Priority())
+	}
+}

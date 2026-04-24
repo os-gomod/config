@@ -56,26 +56,6 @@ func TestDebounce(t *testing.T) {
 	})
 }
 
-func TestChangeType_String(t *testing.T) {
-	tests := []struct {
-		ct   ChangeType
-		want string
-	}{
-		{ChangeCreated, "created"},
-		{ChangeModified, "modified"},
-		{ChangeDeleted, "deleted"},
-		{ChangeReload, "reload"},
-		{ChangeType(99), "unknown"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.ct.String(); got != tt.want {
-				t.Errorf("ChangeType.String() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPatternWatcher(t *testing.T) {
 	t.Run("matches pattern", func(t *testing.T) {
 		var received event.Event

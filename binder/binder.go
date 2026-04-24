@@ -60,8 +60,7 @@ func New(opts ...Option) *StructBinder {
 // Option configures a StructBinder.
 type Option func(*StructBinder)
 
-// WithTagName sets the struct tag used for key mapping.
-// Defaults to "config" if not specified.
+// WithTagName sets the struct tag used for key mapping. Defaults to "config" if not specified.
 func WithTagName(tag string) Option {
 	return func(b *StructBinder) { b.tagName = tag }
 }

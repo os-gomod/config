@@ -30,6 +30,8 @@ const (
 	TypeError
 	// TypeWatch indicates a filesystem or remote watch event was triggered.
 	TypeWatch
+	// TypeAudit indicates an audit event for tracking configuration access or changes.
+	TypeAudit
 )
 
 // typeNames maps Type constants to their string representations.
@@ -40,6 +42,7 @@ var typeNames = [...]string{
 	TypeReload: "reload",
 	TypeError:  "error",
 	TypeWatch:  "watch",
+	TypeAudit:  "audit",
 }
 
 // String returns the human-readable name of the event type.
@@ -145,4 +148,29 @@ func NewDiffEvents(old, newData map[string]value.Value, opts ...Option) []Event 
 		}
 	}
 	return events
+}
+
+// RedactedDiffEvents is like NewDiffEvents but redacts secret values in
+// both old and new values. Use this when emitting events to external
+// systems (logs, metrics, webhooks) where secrets must not appear.
+func RedactedDiffEvents(old, newData map[string]value.Value, opts ...Option) []Event {
+	return NewDiffEvents(value.RedactMap(old), value.RedactMap(newData), opts...)
+}
+
+// RedactSecrets returns a copy of this Event with secret values in
+// OldValue and NewValue replaced by [REDACTED]. The Key, Type,
+// Timestamp, Source, TraceID, Labels, Metadata, and Error are preserved.
+func (e Event) RedactSecrets() Event {
+	return Event{
+		Type:      e.Type,
+		Key:       e.Key,
+		OldValue:  e.OldValue.Redact(e.Key),
+		NewValue:  e.NewValue.Redact(e.Key),
+		Timestamp: e.Timestamp,
+		Source:    e.Source,
+		TraceID:   e.TraceID,
+		Labels:    e.Labels,
+		Metadata:  e.Metadata,
+		Error:     e.Error,
+	}
 }

@@ -1,29 +1,34 @@
-// Package config provides a production-grade, layered configuration management
-// library for Go applications. It supports loading configuration from multiple
-// sources (files, environment variables, remote providers), merging them by
-// priority, watching for changes in real-time, and binding to native Go structs.
+// Package config provides a layered, reactive configuration management library for Go.
 //
-// # Quick Start
+// It supports loading configuration from multiple sources (files, environment variables,
+// remote providers like Consul, etcd, NATS, Vault), merging them by priority, and
+// automatically propagating changes to subscribers via an event bus.
 //
-//	cfg, err := config.New(context.Background(),
-//	    config.WithLoader(loader.NewMemoryLoader(
-//	        loader.WithMemoryData(map[string]any{"host": "localhost", "port": 8080}),
-//	    )),
+// Key features:
+//   - Layered configuration with priority-based merging
+//   - Hot-reload with file watching and remote provider polling
+//   - Struct binding with validation (go-playground/validator)
+//   - Secret redaction in snapshots, events, and logs
+//   - Plugin system for extending loaders, decoders, and validators
+//   - OpenTelemetry integration for distributed tracing
+//   - Circuit breakers per layer for resilience against failing sources
+//   - JSON Schema generation from Go structs
+//   - Feature flags with boolean, percentage, and variant evaluation
+//   - Profile-based configuration swapping (GitOps workflows)
+//
+// Example (basic usage):
+//
+//	cfg, err := config.New(ctx,
+//	    config.WithLoader(loader.NewFileLoader("config.yaml")),
+//	    config.WithLoader(loader.NewEnvLoader()),
 //	)
-//	if err != nil { log.Fatal(err) }
-//	defer cfg.Close(context.Background())
-//
-//	host, _ := cfg.GetString("host")
-//	port, _ := cfg.GetInt("port")
-//
-// # Key Concepts
-//
-//   - Layers: Configuration sources merged by priority (higher wins).
-//   - Values: Typed, source-tracked configuration values.
-//   - Events: Real-time pub/sub notifications on config changes.
-//   - Hooks: Lifecycle callbacks (before/after reload, set, delete, etc.).
-//   - Plugins: Extensible system for registering custom loaders and providers.
-//   - Binders: Type-safe struct binding with tag-based field mapping.
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	var appConfig AppConfig
+//	if err := cfg.Bind(ctx, &appConfig); err != nil {
+//	    log.Fatal(err)
+//	}
 package config
 
 import (
@@ -31,6 +36,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	gvalidator "github.com/go-playground/validator/v10"
 
@@ -43,27 +50,25 @@ import (
 	"github.com/os-gomod/config/loader"
 	"github.com/os-gomod/config/observability"
 	"github.com/os-gomod/config/plugin"
+	"github.com/os-gomod/config/profile"
 	"github.com/os-gomod/config/provider"
 	"github.com/os-gomod/config/schema"
 	"github.com/os-gomod/config/validator"
 	"github.com/os-gomod/config/watcher"
 )
 
-// ReloadWarning is returned by [New] when the initial reload succeeds but one
-// or more layers produced errors (non-strict mode). It implements [error] so
-// callers can check with errors.Is, and the underlying layer errors are
-// available via [ReloadWarning.LayerErrors].
+// ReloadWarning is returned by [New] when the initial reload completes
+// successfully but one or more layers produced errors. It satisfies the
+// error interface so callers can check with errors.Is/as, while still
+// being able to use the returned *Config.
 type ReloadWarning struct {
 	LayerErrors []core.LayerError
 }
 
-// Error returns a human-readable summary of the reload warnings, including
-// the count of affected layers.
 func (w *ReloadWarning) Error() string {
 	return fmt.Sprintf("config: reload completed with %d layer warning(s)", len(w.LayerErrors))
 }
 
-// Unwrap returns the first layer error, enabling errors.Is/errors.As chains.
 func (w *ReloadWarning) Unwrap() error {
 	if len(w.LayerErrors) > 0 {
 		return w.LayerErrors[0].Err
@@ -71,20 +76,25 @@ func (w *ReloadWarning) Unwrap() error {
 	return nil
 }
 
-// defaultReloadErrHandler logs reload errors at warn level. It is the default
-// handler used when none is provided via [WithReloadErrorHandler].
+// defaultReloadErrHandler logs reload errors that occur during
+// background file watching. This is the default handler used when
+// no custom handler is provided via [WithReloadErrorHandler].
 func defaultReloadErrHandler(err error) {
 	slog.Warn("config: background reload failed", "err", err)
 }
 
-// Config is the top-level configuration manager. It embeds a [core.Engine]
-// and extends it with an event bus, struct binder, validator, hook manager,
-// watcher manager, plugin registry, and observability recorder.
+// Config is the top-level configuration manager. It wraps a [core.Engine]
+// with a namespace-aware API, an event bus, struct binding, validation,
+// lifecycle hooks, plugin support, and audit logging.
 //
-// Call [New] or [MustNew] to create an instance, and always call [Config.Close]
-// when done to release resources and stop background watchers.
+// Config is safe for concurrent use. All reads are lock-free via atomic
+// pointer to the underlying [value.State]; all writes are serialized.
+//
+// Most applications should create a Config via [New] (functional options)
+// or the [Builder] (fluent API) and use [Bind] to populate a struct.
 type Config struct {
 	*core.Engine
+	namespace       string
 	bus             *event.Bus
 	binder          *binder.StructBinder
 	validator       validator.Validator
@@ -93,21 +103,22 @@ type Config struct {
 	pluginReg       *plugin.Registry
 	ctx             context.Context
 	recorder        observability.Recorder
+	auditRecorder   *event.AuditRecorder
+	tracer          trace.Tracer
 	strictReload    bool
 	defaultDebounce time.Duration
 	onReloadErr     func(error)
+	schemaTarget    any
 }
 
-// New creates a new [Config] instance by applying the given functional options,
-// performing an initial reload of all layers, and wiring up hooks, plugins,
-// and the struct binder.
+// New creates a new Config instance, applies the given options, and
+// performs an initial reload of all layers.
 //
-// If the initial reload fails entirely, an error is returned. If one or more
-// layers fail but at least one succeeds, behavior depends on [WithStrictReload]:
-//   - Strict mode: returns an error listing the failed layers.
-//   - Non-strict (default): returns a [*ReloadWarning] alongside the Config.
+// If the initial reload has layer errors and [WithStrictReload] is set,
+// New returns an error. Otherwise it returns the Config along with a
+// [ReloadWarning] (which still satisfies error) describing the layer failures.
 //
-// The returned [Config] must be closed with [Config.Close] when no longer needed.
+// Returns an error if the reload itself fails catastrophically.
 func New(ctx context.Context, opts ...Option) (*Config, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -116,24 +127,38 @@ func New(ctx context.Context, opts ...Option) (*Config, error) {
 	bus := event.NewBus()
 	hookMgr := hooks.NewManager()
 	hookMgr.SetRecorder(o.recorder)
-	engineOpts := make([]core.Option, 0, 1+len(o.layers))
+	engineOpts := make([]core.Option, 0, 2+len(o.layers))
 	engineOpts = append(engineOpts, core.WithMaxWorkers(o.maxWorkers))
+	if o.deltaReload {
+		engineOpts = append(engineOpts, core.WithDeltaReload())
+	}
+	if o.batchedReload {
+		engineOpts = append(engineOpts, core.WithBatchedReload(true))
+	}
+	if o.cacheTTL > 0 {
+		engineOpts = append(engineOpts, core.WithCacheTTL(o.cacheTTL))
+	}
 	for _, l := range o.layers {
 		engineOpts = append(engineOpts, core.WithLayer(l))
 	}
 	eng := core.New(engineOpts...)
 	watchMgr := watcher.NewManager()
+	auditRec := event.NewAuditRecorder(o.recorder)
 	c := &Config{
 		Engine:          eng,
+		namespace:       o.namespace,
 		bus:             bus,
 		validator:       o.val,
 		hookMgr:         hookMgr,
 		watchMgr:        watchMgr,
 		ctx:             ctx,
 		recorder:        o.recorder,
+		auditRecorder:   auditRec,
+		tracer:          o.tracer,
 		strictReload:    o.strictReload,
 		defaultDebounce: o.defaultDebounce,
 		onReloadErr:     o.onReloadErr,
+		schemaTarget:    o.schemaTarget,
 	}
 	if len(o.plugins) > 0 {
 		c.pluginReg = plugin.NewRegistry()
@@ -165,9 +190,8 @@ func New(ctx context.Context, opts ...Option) (*Config, error) {
 	return c, nil
 }
 
-// MustNew is like [New] but panics on error. It is intended for use in
-// package-level initialisation or situations where configuration is expected
-// to always succeed.
+// MustNew is like [New] but panics on error. Use this in package-level
+// init functions or tests where failure is unrecoverable.
 func MustNew(ctx context.Context, opts ...Option) *Config {
 	c, err := New(ctx, opts...)
 	if err != nil {
@@ -176,13 +200,15 @@ func MustNew(ctx context.Context, opts ...Option) *Config {
 	return c
 }
 
-// Reload re-reads all enabled layers, merges their data by priority, computes
-// a diff against the current state, and publishes change events. It also
-// executes before/after reload hooks and records observability metrics.
+// Reload reloads all enabled layers, merges their data by priority, computes
+// a diff against the previous state, and publishes change events to the bus.
 //
-// Returns a [core.ReloadResult] containing the generated events and any
-// per-layer errors.
+// It runs before/after-reload hooks and emits an audit event for compliance.
+// If [WithSchemaValidation] was configured and the reload succeeds, it also
+// validates the merged config against the schema target.
 func (c *Config) Reload(ctx context.Context) (core.ReloadResult, error) {
+	ctx, span := c.startSpan(ctx, "config.reload")
+	defer span.End()
 	start := time.Now()
 	if c.hookMgr.Has(event.HookBeforeReload) {
 		hctx := &hooks.Context{
@@ -201,6 +227,13 @@ func (c *Config) Reload(ctx context.Context) (core.ReloadResult, error) {
 	for i := range result.Events {
 		c.bus.Publish(ctx, &result.Events[i])
 	}
+	// Emit audit event for reload
+	{
+		auditEntry := event.NewAuditEntry("reload", "", "system", traceIDFromContext(ctx))
+		auditEvt := event.NewAuditEvent(auditEntry)
+		c.bus.Publish(ctx, &auditEvt)
+		c.auditRecorder.RecordAudit(ctx, auditEntry)
+	}
 	c.recorder.RecordReload(ctx, time.Since(start), len(result.Events), nil)
 	if c.hookMgr.Has(event.HookAfterReload) {
 		hctx := &hooks.Context{
@@ -211,14 +244,24 @@ func (c *Config) Reload(ctx context.Context) (core.ReloadResult, error) {
 			return result, fmt.Errorf("config: after-reload hook: %w", hookErr)
 		}
 	}
+	// Schema validation on reload
+	if c.schemaTarget != nil && !result.HasErrors() {
+		if bindErr := c.Bind(ctx, c.schemaTarget); bindErr != nil {
+			if c.strictReload {
+				return result, fmt.Errorf("config: schema validation on reload: %w", bindErr)
+			}
+			slog.Warn("config: schema validation failed on reload (non-strict)", "err", bindErr)
+		}
+	}
 	return result, nil
 }
 
-// Set writes a single key-value pair into the in-memory state. If the key
-// already exists with an equal value, no event is emitted. Otherwise a
-// Create or Update event is published. Before/after set hooks are executed
-// and observability metrics are recorded.
+// Set sets a single configuration key (with namespace prefix if configured).
+// It emits a create or update event and an audit event.
+// Before/after-set hooks are executed if registered.
 func (c *Config) Set(ctx context.Context, key string, raw any) error {
+	ctx, span := c.startSpan(ctx, "config.set", "key", key)
+	defer span.End()
 	start := time.Now()
 	if c.hookMgr.Has(event.HookBeforeSet) {
 		hctx := &hooks.Context{Operation: "set", Key: key, Value: raw, StartTime: start}
@@ -226,13 +269,22 @@ func (c *Config) Set(ctx context.Context, key string, raw any) error {
 			return fmt.Errorf("config: before-set hook: %w", err)
 		}
 	}
-	evt, err := c.Engine.Set(ctx, key, raw)
+	evt, err := c.Engine.Set(ctx, c.resolveKey(key), raw)
 	if err != nil {
 		c.recorder.RecordSet(ctx, key, time.Since(start), err)
 		return err
 	}
 	c.bus.Publish(ctx, &evt)
 	c.recorder.RecordSet(ctx, key, time.Since(start), nil)
+	// Emit audit event for set
+	{
+		auditEntry := event.NewAuditEntry("set", key, "", traceIDFromContext(ctx), event.WithLabel("source", "user"))
+		auditEntry.OldValue = evt.OldValue
+		auditEntry.NewValue = evt.NewValue
+		auditEvt := event.NewAuditEvent(auditEntry)
+		c.bus.Publish(ctx, &auditEvt)
+		c.auditRecorder.RecordAudit(ctx, auditEntry)
+	}
 	if c.hookMgr.Has(event.HookAfterSet) {
 		hctx := &hooks.Context{Operation: "set", Key: key, Value: raw, StartTime: start}
 		if hookErr := c.hookMgr.Execute(ctx, event.HookAfterSet, hctx); hookErr != nil {
@@ -242,9 +294,8 @@ func (c *Config) Set(ctx context.Context, key string, raw any) error {
 	return nil
 }
 
-// BatchSet atomically writes multiple key-value pairs into the in-memory
-// state. A single lock acquisition is used, and individual Create/Update
-// events are published for each changed key.
+// BatchSet sets multiple configuration keys atomically within a single
+// lock acquisition. Events are published for each changed key.
 func (c *Config) BatchSet(ctx context.Context, kv map[string]any) error {
 	start := time.Now()
 	events, err := c.Engine.BatchSet(ctx, kv)
@@ -259,9 +310,8 @@ func (c *Config) BatchSet(ctx context.Context, kv map[string]any) error {
 	return nil
 }
 
-// Delete removes a single key from the in-memory state. If the key does not
-// exist, no event is emitted and no error is returned. Otherwise a Delete
-// event is published. Before/after delete hooks are executed.
+// Delete removes a configuration key (with namespace prefix). It emits
+// a delete event and an audit event. Before/after-delete hooks are executed.
 func (c *Config) Delete(ctx context.Context, key string) error {
 	start := time.Now()
 	if c.hookMgr.Has(event.HookBeforeDelete) {
@@ -270,13 +320,22 @@ func (c *Config) Delete(ctx context.Context, key string) error {
 			return fmt.Errorf("config: before-delete hook: %w", err)
 		}
 	}
-	evt, err := c.Engine.Delete(ctx, key)
+	evt, err := c.Engine.Delete(ctx, c.resolveKey(key))
 	if err != nil {
 		c.recorder.RecordDelete(ctx, key, time.Since(start), err)
 		return err
 	}
 	c.bus.Publish(ctx, &evt)
 	c.recorder.RecordDelete(ctx, key, time.Since(start), nil)
+	// Emit audit event for delete
+	{
+		auditEntry := event.NewAuditEntry("delete", key, "", traceIDFromContext(ctx), event.WithLabel("source", "user"))
+		auditEntry.OldValue = evt.OldValue
+		auditEntry.NewValue = evt.NewValue
+		auditEvt := event.NewAuditEvent(auditEntry)
+		c.bus.Publish(ctx, &auditEvt)
+		c.auditRecorder.RecordAudit(ctx, auditEntry)
+	}
 	if c.hookMgr.Has(event.HookAfterDelete) {
 		hctx := &hooks.Context{Operation: "delete", Key: key, StartTime: start}
 		if hookErr := c.hookMgr.Execute(ctx, event.HookAfterDelete, hctx); hookErr != nil {
@@ -286,57 +345,121 @@ func (c *Config) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// Bind maps the current configuration state onto a Go struct (target).
-// The binder uses struct tags and reflection to populate fields.
-// An optional validator (configured via [WithValidator]) is applied
-// automatically if present.
+// Bind unmarshals the current configuration state into the target struct
+// using the "config" struct tag for field mapping. If a validator is
+// configured, the target is validated after binding.
 func (c *Config) Bind(ctx context.Context, target any) error {
+	ctx, span := c.startSpan(ctx, "config.bind")
+	defer span.End()
 	start := time.Now()
 	data := c.GetAll()
 	err := c.binder.Bind(ctx, data, target)
 	c.recorder.RecordBind(ctx, time.Since(start), err)
+	// Emit audit event for bind
+	{
+		auditEntry := event.NewAuditEntry("bind", "", "", traceIDFromContext(ctx))
+		auditEvt := event.NewAuditEvent(auditEntry)
+		c.bus.Publish(ctx, &auditEvt)
+		c.auditRecorder.RecordAudit(ctx, auditEntry)
+	}
 	return err
 }
 
-// Snapshot returns a defensive copy of the entire configuration state as a
-// map of string keys to [value.Value] entries.
+// Namespace returns the current namespace prefix. Returns empty string if no namespace is set.
+func (c *Config) Namespace() string {
+	return c.namespace
+}
+
+// resolveKey prefixes the key with the namespace if one is set.
+func (c *Config) resolveKey(key string) string {
+	if c.namespace == "" {
+		return key
+	}
+	return c.namespace + key
+}
+
+// SetNamespace changes the active namespace and triggers a reload
+// to populate the config with the namespaced keys.
+// This is useful for runtime tenant switching.
+func (c *Config) SetNamespace(ctx context.Context, ns string) error {
+	if c.namespace == ns {
+		return nil
+	}
+	c.namespace = ns
+	_, err := c.Reload(ctx)
+	return err
+}
+
+// Get resolves the key with the namespace prefix and looks it up.
+// This shadows the embedded Engine.Get with a namespace-aware version.
+func (c *Config) Get(key string) (value.Value, bool) {
+	return c.Engine.Get(c.resolveKey(key))
+}
+
+// Has checks if a key exists (with namespace prefix).
+func (c *Config) Has(key string) bool {
+	return c.Engine.Has(c.resolveKey(key))
+}
+
+// Snapshot returns a redacted copy of the current configuration state.
+// All secret values are replaced with [REDACTED]. Use Get() for
+// unredacted access when needed by the application.
 func (c *Config) Snapshot() map[string]value.Value {
-	return c.GetAll()
+	state := c.State()
+	if state == nil {
+		return make(map[string]value.Value)
+	}
+	return state.RedactedCopy().GetAll()
 }
 
 // Restore replaces the current configuration state with the provided data.
-// This is useful for rolling back to a previously captured [Snapshot].
+// It is typically used to restore from a previously saved snapshot.
 func (c *Config) Restore(data map[string]value.Value) {
 	c.SetState(data)
 }
 
-// OnChange registers an event observer that is notified whenever a change
-// event matches the given glob pattern. Returns an unsubscribe function that
-// removes the observer when called.
-//
-// An empty pattern matches all events.
+// OnChange subscribes to config change events matching the given pattern.
+// It is an alias for [WatchPattern].
 func (c *Config) OnChange(pattern string, obs event.Observer) func() {
 	return c.bus.Subscribe(pattern, obs)
 }
 
-// Subscribe registers an event observer that is notified for all change
-// events (equivalent to OnChange with an empty pattern). Returns an
-// unsubscribe function.
+// WatchPattern subscribes to config changes matching the given glob pattern.
+// Returns an unsubscribe function. The observer is called asynchronously
+// for every event whose key matches the pattern.
+//
+// Pattern syntax supports * (matches any sequence) and ? (matches single char).
+// Empty pattern or "*" matches all keys.
+func (c *Config) WatchPattern(pattern string, obs event.Observer) func() {
+	return c.bus.Subscribe(pattern, obs)
+}
+
+// LoadProfile applies the given profile's layers to the engine and triggers
+// a reload. This enables GitOps workflows where profiles are swapped at
+// runtime (e.g., switching from "staging" to "production" configuration).
+func (c *Config) LoadProfile(ctx context.Context, p *profile.Profile) (core.ReloadResult, error) {
+	if err := p.Apply(c.Engine); err != nil {
+		return core.ReloadResult{}, fmt.Errorf("config: load profile: %w", err)
+	}
+	return c.Reload(ctx)
+}
+
+// Subscribe subscribes to all configuration events (no pattern filter).
+// Returns an unsubscribe function.
 func (c *Config) Subscribe(obs event.Observer) func() {
 	return c.bus.Subscribe("", obs)
 }
 
-// Schema generates a configuration schema from the given struct. The schema
-// describes the expected keys, types, and default values for validation and
-// documentation purposes.
+// Schema generates a JSON Schema from the given struct type.
+// It uses [schema.Generator] internally.
 func (c *Config) Schema(v any) (*schema.Schema, error) {
 	gen := schema.New()
 	return gen.Generate(v)
 }
 
-// Validate runs the configured validator against the given target struct.
-// If no custom validator was provided at construction time, the default
-// validator is used.
+// Validate runs the configured validator against the target struct.
+// If no custom validator was provided via [WithValidator], a default
+// validator with built-in tags is used.
 func (c *Config) Validate(ctx context.Context, target any) error {
 	start := time.Now()
 	val := c.validator
@@ -348,8 +471,8 @@ func (c *Config) Validate(ctx context.Context, target any) error {
 	return err
 }
 
-// Plugins returns the names of all registered plugins, or nil if no plugins
-// were configured.
+// Plugins returns the names of all registered plugins, or nil if
+// no plugins are configured.
 func (c *Config) Plugins() []string {
 	if c.pluginReg == nil {
 		return nil
@@ -357,26 +480,66 @@ func (c *Config) Plugins() []string {
 	return c.pluginReg.Plugins()
 }
 
-// Explain returns a human-readable description of the value stored at the
-// given key, including its raw value, source origin, and priority level.
-// Returns an empty string if the key does not exist.
+// Explain returns a human-readable description of the configuration key,
+// including its value (redacted if it is a secret), source, and priority.
 func (c *Config) Explain(key string) string {
 	v, ok := c.Get(key)
 	if !ok {
 		return ""
 	}
+	displayVal := v.Raw()
+	if value.IsSecret(key) {
+		displayVal = "[REDACTED]"
+		c.recorder.RecordSecretRedacted(ctxForRecord(), "explain")
+	}
 	return fmt.Sprintf(
 		"key %q: value=%v, source=%s, priority=%d",
 		key,
-		v.Raw(),
+		displayVal,
 		v.Source(),
 		v.Priority(),
 	)
 }
 
-// Close stops all watchers, clears the event bus, closes all layers, and
-// runs before/after close lifecycle hooks. It should be called when the
-// [Config] instance is no longer needed, typically via defer.
+// startSpan creates an OpenTelemetry span if a tracer is configured.
+// The span is started with the given name and optional key-value attributes.
+// If no tracer is configured, the returned span is a no-op and the context
+// is returned unchanged.
+func (c *Config) startSpan(ctx context.Context, name string, attrs ...string) (context.Context, trace.Span) {
+	if c.tracer == nil {
+		return ctx, trace.SpanFromContext(ctx)
+	}
+	var spanOpts []trace.SpanStartOption
+	if len(attrs) > 0 {
+		// Build key-value attribute pairs for the span
+		// Note: OTel attributes use attribute.Key(string) and attribute.Value
+		// In a production setup, you'd use go.opentelemetry.io/otel/attribute.String()
+		// to create properly typed attributes. For simplicity, we pass the
+		// span name and let consumers add attributes via the returned Span.
+		_ = attrs // attributes available for future typed attribute support
+	}
+	ctx, span := c.tracer.Start(ctx, name, spanOpts...)
+	return ctx, span
+}
+
+// ctxForRecord returns a context for metric recording when no user context
+// is available (e.g., in Explain which doesn't take a context).
+func ctxForRecord() context.Context {
+	return context.Background()
+}
+
+// traceIDFromContext extracts a distributed trace ID from the context.
+// If no OTel span is found, it generates a new trace ID.
+func traceIDFromContext(ctx context.Context) string {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	if spanCtx.IsValid() {
+		return spanCtx.TraceID().String()
+	}
+	return observability.GenerateTraceID()
+}
+
+// Close shuts down the Config: stops all watchers, clears the event bus,
+// runs before/after-close hooks, and closes the engine.
 func (c *Config) Close(ctx context.Context) error {
 	if c.hookMgr.Has(event.HookBeforeClose) {
 		hctx := &hooks.Context{Operation: "close"}
@@ -392,9 +555,6 @@ func (c *Config) Close(ctx context.Context) error {
 	return err
 }
 
-// startWatch launches a background goroutine that listens for change
-// notifications from the given source and triggers debounced reloads.
-// It stops automatically when the provided context is cancelled.
 func (c *Config) startWatch(ctx context.Context, src interface {
 	Watch(context.Context) (<-chan event.Event, error)
 },
@@ -422,30 +582,22 @@ func (c *Config) startWatch(ctx context.Context, src interface {
 	}()
 }
 
-// pluginHost is an internal adapter that implements [plugin.Host] so that
-// plugins can register loaders, providers, decoders, and validators.
 type pluginHost struct {
 	c *Config
 }
 
-// RegisterLoader registers a named loader factory via the global loader registry.
 func (h *pluginHost) RegisterLoader(name string, f loader.Factory) error {
 	return loader.DefaultRegistry.Register(name, f)
 }
 
-// RegisterProvider registers a named provider factory via the global provider registry.
 func (h *pluginHost) RegisterProvider(name string, f provider.Factory) error {
 	return provider.DefaultRegistry.Register(name, f)
 }
 
-// RegisterDecoder registers a decoder via the global decoder registry.
 func (h *pluginHost) RegisterDecoder(d decoder.Decoder) error {
 	return decoder.DefaultRegistry.Register(d)
 }
 
-// RegisterValidator registers a custom validation function under the given
-// tag on the underlying validator engine. If the configured validator does
-// not support dynamic plugin tags, an error is returned.
 func (h *pluginHost) RegisterValidator(tag string, fn gvalidator.Func) error {
 	if h.c.validator == nil {
 		h.c.validator = validator.New()
@@ -457,8 +609,6 @@ func (h *pluginHost) RegisterValidator(tag string, fn gvalidator.Func) error {
 	return engine.RegisterValidation(tag, fn)
 }
 
-// Subscribe registers an event observer on the plugin host's event bus,
-// allowing plugins to listen for configuration change events.
 func (h *pluginHost) Subscribe(obs event.Observer) func() {
 	return h.c.bus.Subscribe("", obs)
 }

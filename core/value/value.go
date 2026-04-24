@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"sort"
 	"time"
+
+	"github.com/os-gomod/config/internal/secret"
 )
 
 // Type enumerates the supported value types for configuration values.
@@ -374,4 +376,43 @@ func GetAs[T any](s *State, key string) (T, bool) {
 		return zero, false
 	}
 	return As[T](v)
+}
+
+// IsSecret reports whether the given key likely contains a sensitive value.
+// It delegates to secret.IsSecret which checks the key suffix against a
+// well-known list (.password, .token, .secret, .key, .apikey, etc.).
+func IsSecret(key string) bool {
+	return secret.IsSecret(key)
+}
+
+// Redact returns a copy of this Value with its raw data replaced by
+// [REDACTED] if the associated key is a secret. The type, source, and
+// priority are preserved so that structural operations (diff, merge)
+// continue to work correctly on redacted data.
+//
+// Non-secret keys are returned unchanged.
+func (v Value) Redact(key string) Value {
+	if secret.IsSecret(key) {
+		return Value{
+			raw:      secret.RedactMask,
+			typ:      v.typ,
+			src:      v.src,
+			priority: v.priority,
+		}
+	}
+	return v
+}
+
+// RedactMap returns a new map where every value corresponding to a
+// secret key is replaced with [REDACTED]. Non-secret entries are
+// shallow-copied unchanged.
+func RedactMap(data map[string]Value) map[string]Value {
+	if data == nil {
+		return nil
+	}
+	out := make(map[string]Value, len(data))
+	for k, v := range data {
+		out[k] = v.Redact(k)
+	}
+	return out
 }

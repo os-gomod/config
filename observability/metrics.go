@@ -38,10 +38,10 @@ type AtomicMetrics struct {
 	ValidationCalls    atomic.Int64
 	ValidationErrors   atomic.Int64
 	WatchEvents        atomic.Int64
+	SecretsRedacted    atomic.Int64
+	ConfigChangeEvents atomic.Int64
 }
 
-// RecordLoad records a load operation, incrementing the load counter and
-// accumulating duration. On error, increments the error counters.
 func (m *AtomicMetrics) RecordLoad(_ context.Context, _ string, d time.Duration, err error) {
 	m.Loads.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -51,7 +51,6 @@ func (m *AtomicMetrics) RecordLoad(_ context.Context, _ string, d time.Duration,
 	}
 }
 
-// RecordReload records a reload operation with key count and duration.
 func (m *AtomicMetrics) RecordReload(_ context.Context, d time.Duration, keyCount int, err error) {
 	m.Reloads.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -65,7 +64,6 @@ func (m *AtomicMetrics) RecordReload(_ context.Context, d time.Duration, keyCoun
 	}
 }
 
-// RecordSet records a set operation.
 func (m *AtomicMetrics) RecordSet(_ context.Context, _ string, d time.Duration, err error) {
 	m.Sets.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -75,7 +73,6 @@ func (m *AtomicMetrics) RecordSet(_ context.Context, _ string, d time.Duration, 
 	}
 }
 
-// RecordBatchSet records a batch set operation.
 func (m *AtomicMetrics) RecordBatchSet(_ context.Context, d time.Duration, err error) {
 	m.BatchSets.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -85,7 +82,6 @@ func (m *AtomicMetrics) RecordBatchSet(_ context.Context, d time.Duration, err e
 	}
 }
 
-// RecordDelete records a delete operation.
 func (m *AtomicMetrics) RecordDelete(_ context.Context, _ string, d time.Duration, err error) {
 	m.Deletes.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -95,13 +91,11 @@ func (m *AtomicMetrics) RecordDelete(_ context.Context, _ string, d time.Duratio
 	}
 }
 
-// RecordBind records a bind operation.
 func (m *AtomicMetrics) RecordBind(_ context.Context, d time.Duration, _ error) {
 	m.Binds.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
 }
 
-// RecordHook records a hook execution.
 func (m *AtomicMetrics) RecordHook(_ context.Context, _ string, d time.Duration, err error) {
 	m.HookCalls.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -111,7 +105,6 @@ func (m *AtomicMetrics) RecordHook(_ context.Context, _ string, d time.Duration,
 	}
 }
 
-// RecordLayerLoad records a layer load operation.
 func (m *AtomicMetrics) RecordLayerLoad(
 	_ context.Context,
 	_ string,
@@ -127,7 +120,6 @@ func (m *AtomicMetrics) RecordLayerLoad(
 	}
 }
 
-// RecordValidation records a validation operation.
 func (m *AtomicMetrics) RecordValidation(_ context.Context, d time.Duration, err error) {
 	m.ValidationCalls.Add(1)
 	m.TotalDuration.Add(d.Nanoseconds())
@@ -137,13 +129,20 @@ func (m *AtomicMetrics) RecordValidation(_ context.Context, d time.Duration, err
 	}
 }
 
-// RecordWatchEvent records a watch event notification.
 func (m *AtomicMetrics) RecordWatchEvent(_ context.Context, _ string) {
 	m.WatchEvents.Add(1)
 }
 
-// Snapshot returns a map of all current metric values keyed by metric name.
-// This is useful for exporting metrics to external systems or dashboards.
+func (m *AtomicMetrics) RecordSecretRedacted(_ context.Context, _ string) {
+	m.SecretsRedacted.Add(1)
+}
+
+func (m *AtomicMetrics) RecordConfigChangeEvent(_ context.Context, _, _ string) {
+	m.ConfigChangeEvents.Add(1)
+}
+
+// Snapshot returns all counters as a map, suitable for export to
+// monitoring systems.
 func (m *AtomicMetrics) Snapshot() map[string]int64 {
 	return map[string]int64{
 		"loads":             m.Loads.Load(),
@@ -173,14 +172,16 @@ func (m *AtomicMetrics) Snapshot() map[string]int64 {
 			}
 			return int64(v)
 		}(m.LastStateVersion.Load()),
-		"key_count":         m.KeyCount.Load(),
-		"validation_calls":  m.ValidationCalls.Load(),
-		"validation_errors": m.ValidationErrors.Load(),
-		"watch_events":      m.WatchEvents.Load(),
+		"key_count":            m.KeyCount.Load(),
+		"validation_calls":     m.ValidationCalls.Load(),
+		"validation_errors":    m.ValidationErrors.Load(),
+		"watch_events":         m.WatchEvents.Load(),
+		"secrets_redacted":     m.SecretsRedacted.Load(),
+		"config_change_events": m.ConfigChangeEvents.Load(),
 	}
 }
 
-// Reset resets all metrics to zero.
+// Reset resets all counters to zero.
 func (m *AtomicMetrics) Reset() {
 	m.Loads.Store(0)
 	m.Reloads.Store(0)
@@ -207,4 +208,6 @@ func (m *AtomicMetrics) Reset() {
 	m.ValidationCalls.Store(0)
 	m.ValidationErrors.Store(0)
 	m.WatchEvents.Store(0)
+	m.SecretsRedacted.Store(0)
+	m.ConfigChangeEvents.Store(0)
 }

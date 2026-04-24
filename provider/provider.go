@@ -5,22 +5,17 @@ package provider
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/os-gomod/config/core/value"
-	"github.com/os-gomod/config/errors"
 	"github.com/os-gomod/config/event"
-	"github.com/os-gomod/config/internal/common"
 	"github.com/os-gomod/config/internal/pollwatch"
+	"github.com/os-gomod/config/internal/providerbase"
 )
 
-// Provider is the interface that remote configuration sources must implement.
-// Each provider connects to an external system (consul, etcd, nats, etc.) and
-// provides configuration data as a flat map of typed values.
-//
-// Providers are typically registered via the Registry and used as layers in the
-// config engine. They support both polling-based and native push-based watching.
+// Provider is the interface that all configuration providers must implement.
+// Providers fetch configuration data from remote sources (NATS, Consul, etcd)
+// and optionally watch for changes.
 type Provider interface {
 	// Load fetches the current configuration state from the remote source.
 	Load(ctx context.Context) (map[string]value.Value, error)
@@ -46,41 +41,35 @@ type Provider interface {
 	Close(ctx context.Context) error
 }
 
-// BaseProvider provides shared boilerplate for all Provider implementations.
-// It manages closable state, event channels, polling, and diff emission,
-// eliminating ~200 lines of identical code that was previously duplicated
-// across consul, etcd, and nats providers.
+// BaseProvider provides default no-op implementations of the Provider interface.
+// It is retained for backward compatibility. New providers should use
+// providerbase.RemoteProvider[T] which eliminates all boilerplate.
 //
-// Embed BaseProvider in your provider struct and call its methods from your
-// Provider interface implementation. Override CloseClient for provider-specific
-// cleanup (e.g., closing etcd client connections).
+// Deprecated: Use providerbase.RemoteProvider[T] instead.
 type BaseProvider struct {
-	Closable *common.Closable
-	WatchMu  sync.Mutex
-	Mu       sync.Mutex
-	*pollwatch.Controller
-
+	*providerbase.ProviderLifecycle
 	PollInterval time.Duration
 	providerName string
 	priority     int
 }
 
 // NewBaseProvider creates a BaseProvider with the given event buffer size.
-// If bufSize <= 0, a default of 64 is used.
+//
+// Deprecated: Use providerbase.New[ClientType](...) instead.
 func NewBaseProvider(bufSize int) *BaseProvider {
 	if bufSize <= 0 {
-		bufSize = 64
+		bufSize = providerbase.DefaultEventBufSize
 	}
+	ctrl := pollwatch.NewController(bufSize)
 	return &BaseProvider{
-		Closable:   common.NewClosable(),
-		Controller: pollwatch.NewController(bufSize),
+		ProviderLifecycle: providerbase.NewProviderLifecycle(ctrl),
 	}
 }
 
 // SetName sets the provider name.
 func (b *BaseProvider) SetName(name string) { b.providerName = name }
 
-// SetProviderPriority sets the priority.
+// SetProviderPriority sets the provider priority.
 func (b *BaseProvider) SetProviderPriority(p int) { b.priority = p }
 
 // Name returns the provider name.
@@ -89,50 +78,25 @@ func (b *BaseProvider) Name() string { return b.providerName }
 // Priority returns the provider priority.
 func (b *BaseProvider) Priority() int { return b.priority }
 
-// String returns a human-readable description.
+// String returns a string representation.
 func (b *BaseProvider) String() string { return b.providerName }
 
 // IsClosed reports whether the provider has been closed.
 func (b *BaseProvider) IsClosed() bool {
-	return b.Closable.IsClosed()
+	return b.ProviderLifecycle.IsClosed()
 }
 
-// EnsureOpen checks if the provider is closed and returns ErrClosed if so.
-// Use this as a guard at the start of Load, Watch, and Health methods.
+// EnsureOpen returns an error if the provider has been closed.
 func (b *BaseProvider) EnsureOpen() error {
-	if b.Closable.IsClosed() {
-		return errors.ErrClosed
-	}
-	return nil
+	return b.ProviderLifecycle.EnsureOpen()
 }
 
-// CloseProvider handles the common close pattern: stop the watch goroutine,
-// call CloseClient (if overridden), then close the closable.
-// Provider implementations should embed BaseProvider and implement CloseClient
-// for provider-specific cleanup, then call CloseProvider from their Close method.
+// CloseProvider performs an orderly shutdown.
 func (b *BaseProvider) CloseProvider(ctx context.Context) error {
-	b.WatchMu.Lock()
-	defer b.WatchMu.Unlock()
-	b.Controller.Close()
-	b.Closable.Close(ctx)
-	return nil
+	return b.ProviderLifecycle.CloseProvider(ctx)
 }
 
-// PollWatch starts a polling-based watch goroutine using the shared Controller.
-// The callback receives a context and should call Load + EmitDiff.
-// This replaces the identical pollWatch() methods previously in each provider.
-func (b *BaseProvider) PollWatch(
-	ctx context.Context,
-	callback func(ctx context.Context),
-) (<-chan event.Event, error) {
-	b.WatchMu.Lock()
-	defer b.WatchMu.Unlock()
-	return b.StartPolling(ctx, b.PollInterval, callback), nil
-}
-
-// EmitDiff publishes create/update/delete events for the difference between
-// old and new data maps. This replaces the identical emitDiff() methods
-// previously in each provider.
+// EmitDiff emits diff events through the poll watch controller.
 func (b *BaseProvider) EmitDiff(
 	ctx context.Context,
 	old, newData map[string]value.Value,
@@ -141,58 +105,25 @@ func (b *BaseProvider) EmitDiff(
 	return b.Controller.EmitDiff(ctx, old, newData, opts...)
 }
 
-// PollLoadAndWatch starts polling and automatically tracks lastData for diff
-// computation. The loadFn should return the current config data. On each tick,
-// it calls loadFn, computes diffs against the previous result, and emits events.
-// This is the recommended method for providers that only need polling-based watching.
-//
-// Example:
-//
-//	return p.PollLoadAndWatch(ctx, p.Load)
-func (b *BaseProvider) PollLoadAndWatch(
-	ctx context.Context,
-	loadFn func(context.Context) (map[string]value.Value, error),
-) (<-chan event.Event, error) {
-	var lastData map[string]value.Value
-	ch, _ := b.PollWatch(ctx, func(watchCtx context.Context) {
-		data, err := loadFn(watchCtx)
-		if err != nil {
-			return
-		}
-		if lastData != nil {
-			_ = b.EmitDiff(watchCtx, lastData, data)
-		}
-		lastData = data
-	})
-	return ch, nil
-}
-
-// CloseClient is a hook called during Close for provider-specific cleanup.
-// Override this in your provider to close client connections, etc.
-// The default implementation does nothing.
-func (b *BaseProvider) CloseClient() {}
-
-// Close implements Provider.Close.
+// Close shuts down the provider.
 func (b *BaseProvider) Close(ctx context.Context) error {
 	return b.CloseProvider(ctx)
 }
 
-// Load implements Provider.Load (no-op, returns empty map).
+// Load returns an empty map (no-op default).
 func (b *BaseProvider) Load(_ context.Context) (map[string]value.Value, error) {
 	return make(map[string]value.Value), nil
 }
 
-// Watch implements Provider.Watch (no-op, returns nil).
+// Watch returns nil (no-op default).
 func (b *BaseProvider) Watch(_ context.Context) (<-chan event.Event, error) {
 	return nil, nil
 }
 
-// Health implements Provider.Health (no-op, returns nil).
+// Health returns nil (no-op default).
 func (b *BaseProvider) Health(_ context.Context) error {
 	return nil
 }
 
-// Factory is a function that creates a Provider from a configuration map.
-// Factories are registered with the Registry and used to instantiate
-// providers by name.
+// Factory creates a [Provider] from a configuration map.
 type Factory func(cfg map[string]any) (Provider, error)

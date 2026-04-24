@@ -11,203 +11,136 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/os-gomod/config/core/value"
-	"github.com/os-gomod/config/event"
+	"github.com/os-gomod/config/internal/providerbase"
 	"github.com/os-gomod/config/provider"
 )
 
-// Config holds the connection and behavior parameters for the NATS provider.
+// Config holds the NATS Key-Value provider configuration.
 type Config struct {
-	URL          string
-	Bucket       string
-	Timeout      time.Duration
-	Priority     int
+	// URL is the NATS server URL. Defaults to nats://localhost:4222.
+	URL string
+	// Bucket is the JetStream KV bucket name. Required.
+	Bucket string
+	// Timeout is the connection and operation timeout. Defaults to 5s.
+	Timeout time.Duration
+	// Priority determines merge order. Higher values win.
+	Priority int
+	// PollInterval enables polling-based watching when > 0.
 	PollInterval time.Duration
 }
 
-// natsKV abstracts the NATS KV interface for testability.
+// natsKV abstracts the NATS Key-Value store for testability.
 type natsKV interface {
 	Keys(...nats.WatchOpt) ([]string, error)
 	Get(key string) (nats.KeyValueEntry, error)
 	WatchAll(...nats.WatchOpt) (nats.KeyWatcher, error)
 }
 
-// Provider reads configuration key-value pairs from a NATS JetStream KV bucket.
-// It supports both native JetStream watching (default) and periodic polling.
-// Shared polling/diff/close logic is provided by BaseProvider.
+// Provider is a NATS Key-Value configuration provider backed by RemoteProvider.
+// It is a type alias — all methods (Load, Watch, Health, Close, etc.) are
+// provided by the generic RemoteProvider[natsKV].
 type Provider struct {
-	*provider.BaseProvider
+	*providerbase.RemoteProvider[natsKV]
 	cfg Config
-	kv  natsKV
-	nc  *nats.Conn
 }
 
 var _ provider.Provider = (*Provider)(nil)
 
-// New creates a new NATS provider with the given configuration.
-// Default URL is "nats://localhost:4222" and default timeout is 5 seconds.
-func New(cfg Config) (*Provider, error) {
+// New creates a new NATS Key-Value provider.
+// The returned provider lazily connects to NATS on first Load/Health call.
+func New(cfg *Config) (*Provider, error) {
 	if cfg.URL == "" {
 		cfg.URL = "nats://localhost:4222"
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+
+	var nc *nats.Conn
+
 	p := &Provider{
-		BaseProvider: provider.NewBaseProvider(64),
-		cfg:          cfg,
-	}
-	p.PollInterval = cfg.PollInterval
-	return p, nil
-}
-
-// initKV establishes a NATS connection and opens the KV bucket.
-func (p *Provider) initKV() error {
-	nc, err := nats.Connect(p.cfg.URL)
-	if err != nil {
-		return fmt.Errorf("nats connect: %w", err)
-	}
-	p.nc = nc
-	js, err := nc.JetStream()
-	if err != nil {
-		return fmt.Errorf("nats JetStream: %w", err)
-	}
-	kv, err := js.KeyValue(p.cfg.Bucket)
-	if err != nil {
-		return fmt.Errorf("nats KV bucket %q: %w", p.cfg.Bucket, err)
-	}
-	p.kv = kv
-	return nil
-}
-
-// Load fetches all key-value pairs from the configured NATS KV bucket.
-func (p *Provider) Load(_ context.Context) (map[string]value.Value, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	p.Mu.Lock()
-	if p.kv == nil {
-		if err := p.initKV(); err != nil {
-			p.Mu.Unlock()
-			return nil, err
-		}
-	}
-	kv := p.kv
-	p.Mu.Unlock()
-
-	keys, err := kv.Keys()
-	if err != nil {
-		return nil, fmt.Errorf("nats KV keys: %w", err)
-	}
-	result := make(map[string]value.Value, len(keys))
-	for _, k := range keys {
-		entry, entryErr := kv.Get(k)
-		if entryErr != nil {
-			continue
-		}
-		result[k] = value.New(
-			string(entry.Value()),
-			value.TypeString,
-			value.SourceRemote,
-			p.cfg.Priority,
-		)
-	}
-	return result, nil
-}
-
-// Watch returns a channel of configuration change events.
-// Uses periodic polling if PollInterval is configured; otherwise uses
-// NATS JetStream's native WatchAll API.
-func (p *Provider) Watch(ctx context.Context) (<-chan event.Event, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	if p.PollInterval > 0 {
-		return p.PollLoadAndWatch(ctx, p.Load)
-	}
-	return p.watchMode(ctx)
-}
-
-// Health checks if the NATS connection is alive.
-func (p *Provider) Health(_ context.Context) error {
-	if p.nc == nil || !p.nc.IsConnected() {
-		return fmt.Errorf("nats: not connected")
-	}
-	return nil
-}
-
-// Name returns "nats".
-func (p *Provider) Name() string { return "nats" }
-
-// Priority returns the provider priority.
-func (p *Provider) Priority() int { return p.cfg.Priority }
-
-// String returns a human-readable description including the NATS URL.
-func (p *Provider) String() string { return "nats:" + p.cfg.URL }
-
-// Close stops the watch goroutine, closes the NATS connection, and releases resources.
-func (p *Provider) Close(ctx context.Context) error {
-	if p.nc != nil {
-		p.nc.Close()
-	}
-	return p.CloseProvider(ctx)
-}
-
-// watchMode uses NATS JetStream's WatchAll API for push-based change notification.
-// This is NATS-specific and cannot be shared with other providers.
-func (p *Provider) watchMode(ctx context.Context) (<-chan event.Event, error) {
-	p.WatchMu.Lock()
-	defer p.WatchMu.Unlock()
-	p.Mu.Lock()
-	if p.kv == nil {
-		if err := p.initKV(); err != nil {
-			p.Mu.Unlock()
-			return nil, err
-		}
-	}
-	kv := p.kv
-	p.Mu.Unlock()
-
-	watcher, err := kv.WatchAll()
-	if err != nil {
-		return nil, fmt.Errorf("nats KV watch: %w", err)
+		cfg: *cfg,
 	}
 
-	ch := make(chan event.Event, 64)
-	go func() {
-		var lastData map[string]value.Value
-		for {
-			select {
-			case <-ctx.Done():
-				_ = watcher.Stop()
-				return
-			case <-p.Done():
-				_ = watcher.Stop()
-				return
-			case _, ok := <-watcher.Updates():
-				if !ok {
-					return
-				}
-				newData, loadErr := p.Load(ctx)
-				if loadErr != nil {
+	p.RemoteProvider = providerbase.New(providerbase.Config[natsKV]{
+		Name:         "nats",
+		Priority:     cfg.Priority,
+		PollInterval: cfg.PollInterval,
+		StringFormat: "nats:" + cfg.URL,
+		InitFn: func() (natsKV, error) {
+			conn, err := nats.Connect(cfg.URL)
+			if err != nil {
+				return nil, fmt.Errorf("nats connect: %w", err)
+			}
+			nc = conn
+			js, err := conn.JetStream()
+			if err != nil {
+				return nil, fmt.Errorf("nats JetStream: %w", err)
+			}
+			kv, err := js.KeyValue(cfg.Bucket)
+			if err != nil {
+				return nil, fmt.Errorf("nats KV bucket %q: %w", cfg.Bucket, err)
+			}
+			return kv, nil
+		},
+		FetchFn: func(_ context.Context, kv natsKV) (map[string]value.Value, error) {
+			keys, err := kv.Keys()
+			if err != nil {
+				return nil, fmt.Errorf("nats KV keys: %w", err)
+			}
+			result := make(map[string]value.Value, len(keys))
+			for _, k := range keys {
+				entry, entryErr := kv.Get(k)
+				if entryErr != nil {
 					continue
 				}
-				if lastData != nil {
-					evts := event.NewDiffEvents(lastData, newData)
-					for i := range evts {
+				result[k] = value.New(
+					string(entry.Value()),
+					value.TypeString,
+					value.SourceRemote,
+					cfg.Priority,
+				)
+			}
+			return result, nil
+		},
+		HealthFn: func(_ context.Context, _ natsKV) error {
+			if nc == nil || !nc.IsConnected() {
+				return fmt.Errorf("nats: not connected")
+			}
+			return nil
+		},
+		CloseFn: func(_ natsKV) error {
+			if nc != nil {
+				nc.Close()
+			}
+			return nil
+		},
+		NativeWatchFn: func(ctx context.Context, kv natsKV) (<-chan struct{}, error) {
+			watcher, err := kv.WatchAll()
+			if err != nil {
+				return nil, fmt.Errorf("nats KV watch: %w", err)
+			}
+			trigger := make(chan struct{}, 1)
+			go func() {
+				defer func() { _ = watcher.Stop() }()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case _, ok := <-watcher.Updates():
+						if !ok {
+							return
+						}
 						select {
-						case ch <- evts[i]:
-						case <-ctx.Done():
-							_ = watcher.Stop()
-							return
-						case <-p.Done():
-							_ = watcher.Stop()
-							return
+						case trigger <- struct{}{}:
+						default:
 						}
 					}
 				}
-				lastData = newData
-			}
-		}
-	}()
-	return ch, nil
+			}()
+			return trigger, nil
+		},
+	})
+
+	return p, nil
 }

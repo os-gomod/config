@@ -35,6 +35,20 @@ func WithMaxWorkers(n int) Option {
 	}
 }
 
+// WithDeltaReload enables delta optimization: unchanged layers are
+// skipped during reload based on checksum comparison.
+func WithDeltaReload() Option {
+	return func(e *Engine) { e.deltaReload = true }
+}
+
+func WithBatchedReload(enabled bool) Option {
+	return func(e *Engine) { e.batchedReload = enabled }
+}
+
+func WithCacheTTL(ttl time.Duration) Option {
+	return func(e *Engine) { e.cacheTTL = ttl }
+}
+
 // LayerOption is a functional option for configuring a [Layer] during
 // creation with [NewLayer].
 type LayerOption func(*Layer)

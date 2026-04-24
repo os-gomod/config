@@ -12,42 +12,49 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/os-gomod/config/core/value"
-	"github.com/os-gomod/config/event"
 	"github.com/os-gomod/config/internal/keyutil"
+	"github.com/os-gomod/config/internal/providerbase"
 	"github.com/os-gomod/config/provider"
 )
 
-// Config holds the connection and behavior parameters for the etcd provider.
+// Config holds the etcd provider configuration.
 type Config struct {
-	Endpoints    []string
-	Username     string
-	Password     string
-	Timeout      time.Duration
-	Prefix       string
-	Priority     int
+	// Endpoints is the list of etcd server addresses. Defaults to [127.0.0.1:2379].
+	Endpoints []string
+	// Username for etcd authentication. Optional.
+	Username string
+	// Password for etcd authentication. Optional.
+	Password string
+	// Timeout is the connection and operation timeout. Defaults to 5s.
+	Timeout time.Duration
+	// Prefix is the key prefix to watch. Defaults to "".
+	Prefix string
+	// Priority determines merge order. Higher values win.
+	Priority int
+	// PollInterval enables polling-based watching when > 0.
+	// If both PollInterval and native watch are configured,
+	// polling takes precedence.
 	PollInterval time.Duration
 }
 
-// etcdClient abstracts the etcd client for testability.
+// etcdClient abstracts the etcd client API for testability.
 type etcdClient interface {
 	Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error)
 	Watch(ctx context.Context, key string, opts ...clientv3.OpOption) clientv3.WatchChan
 	Close() error
 }
 
-// Provider reads configuration key-value pairs from etcd.
-// It supports both native etcd Watch API (default) and periodic polling.
-// Shared polling/diff/close logic is provided by BaseProvider.
+// Provider is an etcd configuration provider backed by RemoteProvider.
+// It is a type alias — all methods are provided by RemoteProvider[etcdClient].
 type Provider struct {
-	*provider.BaseProvider
-	cfg    Config
-	client etcdClient
+	*providerbase.RemoteProvider[etcdClient]
+	cfg Config
 }
 
 var _ provider.Provider = (*Provider)(nil)
 
-// New creates a new etcd provider with the given configuration.
-// Default endpoint is "127.0.0.1:2379" and default timeout is 5 seconds.
+// New creates a new etcd configuration provider.
+// The returned provider lazily connects to etcd on first Load/Health call.
 func New(cfg *Config) (*Provider, error) {
 	if len(cfg.Endpoints) == 0 {
 		cfg.Endpoints = []string{"127.0.0.1:2379"}
@@ -55,163 +62,92 @@ func New(cfg *Config) (*Provider, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+
+	prefix := cfg.Prefix
+	timeout := cfg.Timeout
+	priority := cfg.Priority
+	endpoints := cfg.Endpoints
+	username := cfg.Username
+	password := cfg.Password
+
 	p := &Provider{
-		BaseProvider: provider.NewBaseProvider(64),
-		cfg:          *cfg,
+		cfg: *cfg,
 	}
-	p.PollInterval = cfg.PollInterval
-	return p, nil
-}
 
-// ensureClient lazily creates an etcd client connection.
-func (p *Provider) ensureClient() error {
-	if p.client != nil {
-		return nil
-	}
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   p.cfg.Endpoints,
-		Username:    p.cfg.Username,
-		Password:    p.cfg.Password,
-		DialTimeout: p.cfg.Timeout,
-	})
-	if err != nil {
-		return fmt.Errorf("etcd client init: %w", err)
-	}
-	p.client = cli
-	return nil
-}
-
-// Load fetches all key-value pairs under the configured prefix from etcd.
-func (p *Provider) Load(ctx context.Context) (map[string]value.Value, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	p.Mu.Lock()
-	if err := p.ensureClient(); err != nil {
-		p.Mu.Unlock()
-		return nil, err
-	}
-	cli := p.client
-	p.Mu.Unlock()
-
-	resp, err := cli.Get(ctx, p.cfg.Prefix, clientv3.WithPrefix())
-	if err != nil {
-		return nil, fmt.Errorf("etcd get: %w", err)
-	}
-	result := make(map[string]value.Value, len(resp.Kvs))
-	for _, kv := range resp.Kvs {
-		key := keyutil.FlattenProviderKey(string(kv.Key), p.cfg.Prefix)
-		if key == "" {
-			continue
-		}
-		result[key] = value.New(
-			string(kv.Value),
-			value.TypeString,
-			value.SourceRemote,
-			p.cfg.Priority,
-		)
-	}
-	return result, nil
-}
-
-// Watch returns a channel of configuration change events.
-// Uses periodic polling if PollInterval is configured; otherwise uses
-// etcd's native Watch API.
-func (p *Provider) Watch(ctx context.Context) (<-chan event.Event, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	if p.PollInterval > 0 {
-		return p.PollLoadAndWatch(ctx, p.Load)
-	}
-	return p.watchMode(ctx)
-}
-
-// Health checks connectivity to the etcd cluster by performing a prefix count.
-func (p *Provider) Health(ctx context.Context) error {
-	p.Mu.Lock()
-	if err := p.ensureClient(); err != nil {
-		p.Mu.Unlock()
-		return fmt.Errorf("etcd health: %w", err)
-	}
-	cli := p.client
-	p.Mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
-	defer cancel()
-	_, err := cli.Get(ctx, p.cfg.Prefix, clientv3.WithCountOnly())
-	if err != nil {
-		return fmt.Errorf("etcd health check: %w", err)
-	}
-	return nil
-}
-
-// Name returns "etcd".
-func (p *Provider) Name() string { return "etcd" }
-
-// Priority returns the provider priority.
-func (p *Provider) Priority() int { return p.cfg.Priority }
-
-// String returns a human-readable description including the etcd endpoints.
-func (p *Provider) String() string { return "etcd:" + strings.Join(p.cfg.Endpoints, ",") }
-
-// Close stops the watch goroutine, closes the etcd client, and releases resources.
-func (p *Provider) Close(ctx context.Context) error {
-	if p.client != nil {
-		_ = p.client.Close()
-	}
-	return p.CloseProvider(ctx)
-}
-
-// watchMode uses etcd's native Watch API for push-based change notification.
-// This is etcd-specific and cannot be shared with other providers.
-func (p *Provider) watchMode(ctx context.Context) (<-chan event.Event, error) {
-	p.WatchMu.Lock()
-	defer p.WatchMu.Unlock()
-	p.Mu.Lock()
-	if err := p.ensureClient(); err != nil {
-		p.Mu.Unlock()
-		return nil, err
-	}
-	cli := p.client
-	p.Mu.Unlock()
-
-	watchCh := cli.Watch(ctx, p.cfg.Prefix, clientv3.WithPrefix())
-	ch := make(chan event.Event, 64)
-	go func() {
-		var lastData map[string]value.Value
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.Done():
-				return
-			case resp, ok := <-watchCh:
-				if !ok {
-					return
-				}
-				if err := resp.Err(); err != nil {
+	p.RemoteProvider = providerbase.New(providerbase.Config[etcdClient]{
+		Name:         "etcd",
+		Priority:     cfg.Priority,
+		PollInterval: cfg.PollInterval,
+		StringFormat: "etcd:" + strings.Join(cfg.Endpoints, ","),
+		InitFn: func() (etcdClient, error) {
+			cli, err := clientv3.New(clientv3.Config{
+				Endpoints:   endpoints,
+				Username:    username,
+				Password:    password,
+				DialTimeout: timeout,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("etcd client init: %w", err)
+			}
+			return cli, nil
+		},
+		FetchFn: func(ctx context.Context, cli etcdClient) (map[string]value.Value, error) {
+			resp, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+			if err != nil {
+				return nil, fmt.Errorf("etcd get: %w", err)
+			}
+			result := make(map[string]value.Value, len(resp.Kvs))
+			for _, kv := range resp.Kvs {
+				key := keyutil.FlattenProviderKey(string(kv.Key), prefix)
+				if key == "" {
 					continue
 				}
-				newData, loadErr := p.Load(ctx)
-				if loadErr != nil {
-					continue
-				}
-				if lastData != nil {
-					evts := event.NewDiffEvents(lastData, newData)
-					for i := range evts {
+				result[key] = value.New(
+					string(kv.Value),
+					value.TypeString,
+					value.SourceRemote,
+					priority,
+				)
+			}
+			return result, nil
+		},
+		HealthFn: func(ctx context.Context, cli etcdClient) error {
+			healthCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			_, err := cli.Get(healthCtx, prefix, clientv3.WithCountOnly())
+			if err != nil {
+				return fmt.Errorf("etcd health check: %w", err)
+			}
+			return nil
+		},
+		CloseFn: func(cli etcdClient) error {
+			return cli.Close()
+		},
+		NativeWatchFn: func(ctx context.Context, cli etcdClient) (<-chan struct{}, error) {
+			watchCh := cli.Watch(ctx, prefix, clientv3.WithPrefix())
+			trigger := make(chan struct{}, 1)
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case resp, ok := <-watchCh:
+						if !ok {
+							return
+						}
+						if err := resp.Err(); err != nil {
+							continue
+						}
 						select {
-						case ch <- evts[i]:
-						case <-ctx.Done():
-							return
-						case <-p.Done():
-							return
+						case trigger <- struct{}{}:
+						default:
 						}
 					}
 				}
-				lastData = newData
-			}
-		}
-	}()
-	return ch, nil
+			}()
+			return trigger, nil
+		},
+	})
+
+	return p, nil
 }

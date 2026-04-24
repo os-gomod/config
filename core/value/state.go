@@ -96,3 +96,14 @@ func (s *State) Equal(other *State) bool {
 func (s *State) DiffEvents(newData map[string]Value) []DiffEvent {
 	return ComputeDiff(s.data, newData)
 }
+
+// RedactedCopy returns a new State with all secret values replaced by
+// [REDACTED]. The version and checksum are recomputed for the redacted
+// data. The original State is not modified.
+//
+// This is used by Config.Snapshot() and logging to prevent accidental
+// secret leakage in diagnostic output.
+func (s *State) RedactedCopy() *State {
+	redacted := RedactMap(s.data)
+	return NewState(redacted, s.version)
+}

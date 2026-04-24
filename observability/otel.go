@@ -10,36 +10,27 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// OTelRecorder is a Recorder implementation that forwards configuration
-// operation metrics to OpenTelemetry. It uses counters for operations and
-// errors, histograms for durations, and an up-down counter for key counts.
+// OTelRecorder is a [Recorder] implementation that exports metrics
+// to OpenTelemetry. It creates counters and histograms for all
+// config operations.
 type OTelRecorder struct {
-	loads           metric.Int64Counter
-	reloads         metric.Int64Counter
-	reloadDuration  metric.Float64Histogram
-	errors          metric.Int64Counter
-	layerLoadDur    metric.Float64Histogram
-	keyCount        metric.Int64UpDownCounter
-	validationFails metric.Int64Counter
-	watchEvents     metric.Int64Counter
-	tracer          trace.Tracer
+	loads              metric.Int64Counter
+	reloads            metric.Int64Counter
+	reloadDuration     metric.Float64Histogram
+	errors             metric.Int64Counter
+	layerLoadDur       metric.Float64Histogram
+	keyCount           metric.Int64UpDownCounter
+	validationFails    metric.Int64Counter
+	watchEvents        metric.Int64Counter
+	secretsRedacted    metric.Int64Counter
+	configChangeEvents metric.Int64Counter
+	tracer             trace.Tracer
 }
 
 var _ Recorder = (*OTelRecorder)(nil)
 
-// NewOTelRecorder creates a new OpenTelemetry recorder by registering
-// configuration-specific metrics with the given meter and tracer.
-// Both must be non-nil.
-//
-// Registered metrics:
-//   - config.loads (counter)
-//   - config.reloads (counter)
-//   - config.reload.duration (histogram, ms)
-//   - config.errors (counter, with operation attribute)
-//   - config.layer.load.duration (histogram, ms, with layer attribute)
-//   - config.key_count (up-down counter)
-//   - config.validation.failures (counter)
-//   - config.watcher.events (counter, with source attribute)
+// NewOTelRecorder creates an OTel-backed recorder with the given
+// meter and tracer. Both must be non-nil.
 func NewOTelRecorder(meter metric.Meter, tracer trace.Tracer) (*OTelRecorder, error) {
 	if meter == nil {
 		return nil, fmt.Errorf("observability: meter must not be nil")
@@ -86,6 +77,22 @@ func NewOTelRecorder(meter metric.Meter, tracer trace.Tracer) (*OTelRecorder, er
 	r.watchEvents, err = meter.Int64Counter("config.watcher.events", metric.WithUnit("{event}"))
 	if err != nil {
 		return nil, fmt.Errorf("create config.watcher.events counter: %w", err)
+	}
+	r.secretsRedacted, err = meter.Int64Counter(
+		"config.secrets.redacted",
+		metric.WithUnit("{redaction}"),
+		metric.WithDescription("Number of times secret values were redacted in output"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create config.secrets.redacted counter: %w", err)
+	}
+	r.configChangeEvents, err = meter.Int64Counter(
+		"config.change.events",
+		metric.WithUnit("{event}"),
+		metric.WithDescription("Number of configuration change events emitted"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create config.change.events counter: %w", err)
 	}
 	return r, nil
 }
@@ -177,4 +184,17 @@ func (r *OTelRecorder) RecordValidation(ctx context.Context, _ time.Duration, er
 // RecordWatchEvent records a watch event with a "source" attribute.
 func (r *OTelRecorder) RecordWatchEvent(ctx context.Context, source string) {
 	r.watchEvents.Add(ctx, 1, metric.WithAttributes(attribute.String("source", source)))
+}
+
+func (r *OTelRecorder) RecordSecretRedacted(ctx context.Context, source string) {
+	r.secretsRedacted.Add(ctx, 1, metric.WithAttributes(attribute.String("source", source)))
+}
+
+func (r *OTelRecorder) RecordConfigChangeEvent(ctx context.Context, eventType, source string) {
+	r.configChangeEvents.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("event_type", eventType),
+			attribute.String("source", source),
+		),
+	)
 }

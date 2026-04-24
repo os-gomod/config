@@ -577,3 +577,52 @@ func TestComputeChecksum(t *testing.T) {
 		}
 	})
 }
+
+func TestIsSecret(t *testing.T) {
+	if !IsSecret("db.password") {
+		t.Error("expected db.password to be secret")
+	}
+	if IsSecret("app.name") {
+		t.Error("expected app.name to not be secret")
+	}
+}
+
+func TestValue_Redact_Secret(t *testing.T) {
+	v := NewInMemory("secret123")
+	r := v.Redact("db.password")
+	if r.String() != "[REDACTED]" {
+		t.Errorf("expected [REDACTED], got %s", r.String())
+	}
+	if r.Type() != v.Type() {
+		t.Error("expected type preserved after redact")
+	}
+}
+
+func TestValue_Redact_NonSecret(t *testing.T) {
+	v := NewInMemory("myapp")
+	r := v.Redact("app.name")
+	if r.String() != "myapp" {
+		t.Errorf("expected myapp, got %s", r.String())
+	}
+}
+
+func TestRedactMap(t *testing.T) {
+	data := map[string]Value{
+		"app.name":    NewInMemory("myapp"),
+		"db.password": NewInMemory("secret"),
+	}
+	redacted := RedactMap(data)
+	if redacted["app.name"].String() != "myapp" {
+		t.Error("expected non-secret value unchanged")
+	}
+	if redacted["db.password"].String() != "[REDACTED]" {
+		t.Error("expected secret value redacted")
+	}
+}
+
+func TestRedactMap_Nil(t *testing.T) {
+	redacted := RedactMap(nil)
+	if redacted != nil {
+		t.Error("expected nil for nil input")
+	}
+}

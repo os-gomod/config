@@ -16,6 +16,9 @@ func TestNewSnapshot(t *testing.T) {
 			"key2": value.NewInMemory(42),
 		}
 		s := New(1, 10, data)
+		if s == nil {
+			t.Fatal("expected non-nil snapshot")
+		}
 		if s.ID() != 1 {
 			t.Fatalf("expected id 1, got %d", s.ID())
 		}

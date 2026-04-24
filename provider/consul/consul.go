@@ -9,48 +9,60 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/consul/api"
+
 	"github.com/os-gomod/config/core/value"
-	"github.com/os-gomod/config/event"
 	"github.com/os-gomod/config/internal/keyutil"
+	"github.com/os-gomod/config/internal/providerbase"
 	"github.com/os-gomod/config/provider"
 )
 
-// Config holds the connection and behavior parameters for the Consul provider.
+// Config holds the Consul KV provider configuration.
 type Config struct {
-	Address      string
-	Datacenter   string
-	Token        string
-	TLSConfig    *tls.Config
-	Timeout      time.Duration
-	Prefix       string
-	Priority     int
+	// Address is the Consul agent address. Defaults to 127.0.0.1:8500.
+	Address string
+	// Datacenter is the Consul datacenter. Optional.
+	Datacenter string
+	// Token is the Consul ACL token. Optional.
+	Token string
+	// TLSConfig is the optional TLS configuration for the Consul connection.
+	TLSConfig *tls.Config
+	// Timeout is the HTTP timeout. Defaults to 5s.
+	Timeout time.Duration
+	// Prefix is the KV path prefix to watch. Defaults to "".
+	Prefix string
+	// Priority determines merge order. Higher values win.
+	Priority int
+	// PollInterval enables polling-based watching when > 0.
 	PollInterval time.Duration
+	// Retry configures retry behavior for failed operations.
+	Retry providerbase.RetryConfig
+
+	testClient consulClient
 }
 
+// kvPair represents a single Consul KV pair.
 type kvPair struct {
 	Key   string
 	Value string
 }
 
-// consulClient abstracts the Consul HTTP API for testability.
+// consulClient abstracts the Consul KV API for testability.
 type consulClient interface {
 	KVList(prefix string, index uint64, timeout time.Duration) ([]kvPair, uint64, error)
 }
 
-// Provider reads configuration key-value pairs from Consul.
-// It supports both blocking queries (default watch mode) and periodic polling.
-// Provider-specific logic (client creation, data fetching, native blocking watch)
-// remains here; shared polling/diff/close logic is in BaseProvider.
+// Provider is a Consul KV configuration provider backed by RemoteProvider.
+// It is a type alias — all methods are provided by RemoteProvider[consulClient].
 type Provider struct {
-	*provider.BaseProvider
-	cfg    Config
-	client consulClient
+	*providerbase.RemoteProvider[consulClient]
+	cfg Config
 }
 
 var _ provider.Provider = (*Provider)(nil)
 
-// New creates a new Consul provider with the given configuration.
-// Default address is "127.0.0.1:8500" and default timeout is 5 seconds.
+// New creates a new Consul KV provider using the official hashicorp/consul/api.
+// The returned provider lazily initializes the HTTP client on first Load/Health call.
 func New(cfg *Config) (*Provider, error) {
 	if cfg.Address == "" {
 		cfg.Address = "127.0.0.1:8500"
@@ -58,155 +70,109 @@ func New(cfg *Config) (*Provider, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+
+	prefix := cfg.Prefix
+	timeout := cfg.Timeout
+	priority := cfg.Priority
+
 	p := &Provider{
-		BaseProvider: provider.NewBaseProvider(64),
-		cfg:          *cfg,
+		cfg: *cfg,
 	}
-	p.PollInterval = cfg.PollInterval
+
+	p.RemoteProvider = providerbase.New(providerbase.Config[consulClient]{
+		Name:         "consul",
+		Priority:     cfg.Priority,
+		PollInterval: cfg.PollInterval,
+		StringFormat: "consul:" + cfg.Address,
+		Retry:        cfg.Retry,
+		InitFn: func() (consulClient, error) {
+			if cfg.testClient != nil {
+				return cfg.testClient, nil
+			}
+			return newAPIClient(cfg)
+		},
+		FetchFn: func(_ context.Context, cli consulClient) (map[string]value.Value, error) {
+			pairs, _, err := cli.KVList(prefix, 0, timeout)
+			if err != nil {
+				return nil, fmt.Errorf("consul KV list: %w", err)
+			}
+			result := make(map[string]value.Value, len(pairs))
+			for _, kv := range pairs {
+				key := keyutil.FlattenProviderKey(kv.Key, prefix)
+				if key == "" {
+					continue
+				}
+				result[key] = value.New(kv.Value, value.TypeString, value.SourceRemote, priority)
+			}
+			return result, nil
+		},
+		HealthFn: func(_ context.Context, cli consulClient) error {
+			_, _, err := cli.KVList(prefix, 0, timeout)
+			if err != nil {
+				return fmt.Errorf("consul health check: %w", err)
+			}
+			return nil
+		},
+	})
+
 	return p, nil
 }
 
-// Load fetches all key-value pairs under the configured prefix from Consul.
-func (p *Provider) Load(_ context.Context) (map[string]value.Value, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	p.Mu.Lock()
-	if p.client == nil {
-		p.client = newHTTPClient(&p.cfg)
-	}
-	cli := p.client
-	p.Mu.Unlock()
+// apiClient wraps the official github.com/hashicorp/consul/api KV client
+// to satisfy the consulClient interface for production use.
+type apiClient struct {
+	kv *api.KV
+}
 
-	pairs, _, err := cli.KVList(p.cfg.Prefix, 0, p.cfg.Timeout)
+// newAPIClient creates a real Consul API client from the provider configuration.
+// It configures the address, datacenter, token, and TLS settings.
+func newAPIClient(cfg *Config) (*apiClient, error) {
+	consulCfg := api.DefaultConfig()
+	consulCfg.Address = cfg.Address
+	if cfg.Datacenter != "" {
+		consulCfg.Datacenter = cfg.Datacenter
+	}
+	if cfg.Token != "" {
+		consulCfg.Token = cfg.Token
+	}
+	if cfg.TLSConfig != nil {
+		consulCfg.Transport.TLSClientConfig = cfg.TLSConfig.Clone()
+	}
+	client, err := api.NewClient(consulCfg)
 	if err != nil {
-		return nil, fmt.Errorf("consul KV list: %w", err)
+		return nil, fmt.Errorf("consul api client: %w", err)
 	}
-	result := make(map[string]value.Value, len(pairs))
-	for _, kv := range pairs {
-		key := keyutil.FlattenProviderKey(kv.Key, p.cfg.Prefix)
-		if key == "" {
-			continue
-		}
-		result[key] = value.New(kv.Value, value.TypeString, value.SourceRemote, p.cfg.Priority)
-	}
-	return result, nil
+	return &apiClient{kv: client.KV()}, nil
 }
 
-// Watch returns a channel of configuration change events.
-// Uses periodic polling if PollInterval is configured; otherwise uses
-// Consul's blocking query API.
-func (p *Provider) Watch(ctx context.Context) (<-chan event.Event, error) {
-	if err := p.EnsureOpen(); err != nil {
-		return nil, err
-	}
-	if p.PollInterval > 0 {
-		return p.PollLoadAndWatch(ctx, p.Load)
-	}
-	return p.blockingWatch(ctx)
-}
+// KVList retrieves all KV pairs under the given prefix using the Consul HTTP API.
+// It supports blocking queries via the WaitIndex parameter for long-poll watching.
+//
+// Parameters:
+//   - prefix: the KV path prefix (e.g., "config/")
+//   - index:  the last known ModifyIndex for blocking queries (0 = no blocking)
+//   - timeout: the maximum duration to wait for a blocking query
+//
+// Returns the list of KV pairs, the latest ModifyIndex, and any error.
+func (a *apiClient) KVList(prefix string, index uint64, timeout time.Duration) ([]kvPair, uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-// Health checks connectivity to the Consul agent by performing a KV list.
-func (p *Provider) Health(_ context.Context) error {
-	p.Mu.Lock()
-	if p.client == nil {
-		p.client = newHTTPClient(&p.cfg)
-	}
-	cli := p.client
-	p.Mu.Unlock()
-	_, _, err := cli.KVList(p.cfg.Prefix, 0, p.cfg.Timeout)
+	qOpts := (&api.QueryOptions{
+		WaitIndex: index,
+	}).WithContext(ctx)
+
+	pairs, qm, err := a.kv.List(prefix, qOpts)
 	if err != nil {
-		return fmt.Errorf("consul health check: %w", err)
+		return nil, 0, err
 	}
-	return nil
-}
 
-// Name returns "consul".
-func (p *Provider) Name() string { return "consul" }
-
-// Priority returns the provider priority.
-func (p *Provider) Priority() int { return p.cfg.Priority }
-
-// String returns a human-readable description including the Consul address.
-func (p *Provider) String() string { return "consul:" + p.cfg.Address }
-
-// Close stops the watch goroutine and releases resources.
-func (p *Provider) Close(ctx context.Context) error {
-	return p.CloseProvider(ctx)
-}
-
-// blockingWatch uses Consul's blocking query API to watch for changes.
-// This is consul-specific and cannot be shared with other providers.
-func (p *Provider) blockingWatch(ctx context.Context) (<-chan event.Event, error) {
-	p.WatchMu.Lock()
-	defer p.WatchMu.Unlock()
-	p.Mu.Lock()
-	if p.client == nil {
-		p.client = newHTTPClient(&p.cfg)
-	}
-	cli := p.client
-	p.Mu.Unlock()
-
-	ch := make(chan event.Event, 64)
-	go func() {
-		var lastIndex uint64
-		var lastData map[string]value.Value
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.Done():
-				return
-			default:
-			}
-			pairs, idx, err := cli.KVList(p.cfg.Prefix, lastIndex, p.cfg.Timeout)
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return
-				case <-p.Done():
-					return
-				case <-time.After(time.Second):
-					continue
-				}
-			}
-			if idx != lastIndex {
-				newData := make(map[string]value.Value, len(pairs))
-				for _, kv := range pairs {
-					key := keyutil.FlattenProviderKey(kv.Key, p.cfg.Prefix)
-					if key == "" {
-						continue
-					}
-					newData[key] = value.New(kv.Value, value.TypeString, value.SourceRemote, p.cfg.Priority)
-				}
-				if lastData != nil {
-					evts := event.NewDiffEvents(lastData, newData)
-					for i := range evts {
-						select {
-						case ch <- evts[i]:
-						case <-ctx.Done():
-							return
-						case <-p.Done():
-							return
-						}
-					}
-				}
-				lastData = newData
-				lastIndex = idx
-			}
+	result := make([]kvPair, len(pairs))
+	for i, p := range pairs {
+		result[i] = kvPair{
+			Key:   p.Key,
+			Value: string(p.Value),
 		}
-	}()
-	return ch, nil
-}
-
-type httpClient struct {
-	cfg Config
-}
-
-func newHTTPClient(cfg *Config) consulClient {
-	return &httpClient{cfg: *cfg}
-}
-
-func (c *httpClient) KVList(_ string, _ uint64, _ time.Duration) ([]kvPair, uint64, error) {
-	return nil, 0, nil
+	}
+	return result, qm.LastIndex, nil
 }

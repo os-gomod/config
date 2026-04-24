@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+type fakeConsul struct{}
+
+func (f fakeConsul) KVList(prefix string, index uint64, timeout time.Duration) ([]kvPair, uint64, error) {
+	return nil, 0, nil // stub behavior
+}
+
 func TestConsul_New(t *testing.T) {
 	t.Run("with defaults", func(t *testing.T) {
 		p, err := New(&Config{})
@@ -92,7 +98,10 @@ func TestConsul_String(t *testing.T) {
 
 func TestConsul_Load(t *testing.T) {
 	t.Run("returns empty data from stub client", func(t *testing.T) {
-		p, err := New(&Config{Prefix: "config/"})
+		p, err := New(&Config{
+			Prefix:     "config/",
+			testClient: fakeConsul{},
+		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -113,7 +122,10 @@ func TestConsul_Load(t *testing.T) {
 
 func TestConsul_Health(t *testing.T) {
 	t.Run("health check with stub client", func(t *testing.T) {
-		p, err := New(&Config{Prefix: "config/"})
+		p, err := New(&Config{
+			Prefix:     "config/",
+			testClient: fakeConsul{},
+		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
