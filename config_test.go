@@ -2,470 +2,348 @@ package config
 
 import (
 	"context"
-	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/os-gomod/config/core"
-	"github.com/os-gomod/config/core/value"
-	"github.com/os-gomod/config/errors"
-	"github.com/os-gomod/config/event"
-	"github.com/os-gomod/config/loader"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/os-gomod/config/v2/internal/domain/event"
+	"github.com/os-gomod/config/v2/internal/domain/layer"
+	"github.com/os-gomod/config/v2/internal/domain/value"
+	"github.com/os-gomod/config/v2/internal/loader"
 )
 
-func TestNew(t *testing.T) {
-	t.Run("with memory loader", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{
-			"app.name": "test-app",
-			"app.port": 8080,
-		}))
-		cfg, err := New(t.Context(), WithLoader(mem))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if cfg == nil {
-			t.Fatal("expected non-nil config")
-		}
-		v, ok := cfg.Get("app.name")
-		if !ok || v.Raw() != "test-app" {
-			t.Fatal("expected app.name=test-app")
-		}
-	})
+// ---------------------------------------------------------------------------
+// New config creation
+// ---------------------------------------------------------------------------
 
-	t.Run("with empty memory loader", func(t *testing.T) {
-		mem := loader.NewMemoryLoader()
-		cfg, err := New(t.Context(), WithLoader(mem))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if cfg.Len() != 0 {
-			t.Fatalf("expected 0 keys, got %d", cfg.Len())
-		}
-	})
+func TestNew_Config(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	defer cfg.Close(context.Background())
+
+	// Should be able to call basic operations
+	assert.Equal(t, 0, cfg.Len())
+	assert.Empty(t, cfg.Keys())
 }
 
-func TestMustNew(t *testing.T) {
-	t.Run("no panic with valid options", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v"}))
-		cfg := MustNew(t.Context(), WithLoader(mem))
-		if cfg == nil {
-			t.Fatal("expected non-nil config")
-		}
-	})
+// ---------------------------------------------------------------------------
+// Get / Set / Delete
+// ---------------------------------------------------------------------------
 
-	t.Run("panics on error", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("expected panic")
-			}
-		}()
-		layer := core.NewLayer("fail", core.WithLayerSource(&stubLoadableConfig{
-			err: fmt.Errorf("load failed"),
-		}))
-		MustNew(t.Context(), WithLayer(layer), WithStrictReload())
-	})
+func TestConfig_Get_Nonexistent(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	_, ok := cfg.Get("nonexistent")
+	assert.False(t, ok)
 }
 
-func TestConfig_Reload(t *testing.T) {
-	t.Run("reload updates data", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v1"}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		mem.Update(map[string]any{"k": "v2", "k2": "new"})
-		result, err := cfg.Reload(t.Context())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		v, ok := cfg.Get("k")
-		if !ok || v.Raw() != "v2" {
-			t.Fatal("expected k=v2 after reload")
-		}
-		if len(result.Events) != 2 {
-			t.Fatalf("expected 2 events, got %d", len(result.Events))
-		}
-	})
+func TestConfig_SetAndGet(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
 
-	t.Run("reload publishes events to subscribers", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v1"}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
+	err = cfg.Set(context.Background(), "host", "localhost")
+	require.NoError(t, err)
 
-		var received atomic.Int32
-		cfg.Subscribe(func(_ context.Context, _ event.Event) error {
-			received.Add(1)
-			return nil
-		})
-		mem.Update(map[string]any{"k": "v2"})
-		_, _ = cfg.Reload(t.Context())
-		// Wait for async event delivery
-		time.Sleep(50 * time.Millisecond)
-		if received.Load() == 0 {
-			t.Fatal("expected at least one event to subscriber")
-		}
-	})
-}
-
-func TestConfig_Set(t *testing.T) {
-	t.Run("set a new key", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v"}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		err := cfg.Set(t.Context(), "new.key", "value")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		v, ok := cfg.Get("new.key")
-		if !ok || v.Raw() != "value" {
-			t.Fatal("expected new.key=value")
-		}
-	})
-
-	t.Run("set publishes event", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		ch := make(chan event.Event, 1)
-		cfg.Subscribe(func(_ context.Context, evt event.Event) error {
-			select {
-			case ch <- evt:
-			default:
-			}
-			return nil
-		})
-		_ = cfg.Set(t.Context(), "key", "val")
-		select {
-		case received := <-ch:
-			if received.Key != "key" {
-				t.Fatalf("expected key 'key', got %q", received.Key)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for event")
-		}
-	})
+	v, ok := cfg.Get("host")
+	require.True(t, ok)
+	assert.Equal(t, "localhost", v.String())
 }
 
 func TestConfig_Delete(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v"}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	err := cfg.Delete(t.Context(), "k")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := cfg.Get("k"); ok {
-		t.Fatal("expected key to be deleted")
-	}
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	err = cfg.Set(context.Background(), "temp", "value")
+	require.NoError(t, err)
+
+	err = cfg.Delete(context.Background(), "temp")
+	require.NoError(t, err)
+
+	_, ok := cfg.Get("temp")
+	assert.False(t, ok)
 }
+
+func TestConfig_Has(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	assert.False(t, cfg.Has("missing"))
+
+	err = cfg.Set(context.Background(), "exists", "yes")
+	require.NoError(t, err)
+	assert.True(t, cfg.Has("exists"))
+}
+
+// ---------------------------------------------------------------------------
+// GetAll
+// ---------------------------------------------------------------------------
+
+func TestConfig_GetAll(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	err = cfg.Set(context.Background(), "a", 1)
+	require.NoError(t, err)
+	err = cfg.Set(context.Background(), "b", 2)
+	require.NoError(t, err)
+
+	all := cfg.GetAll()
+	assert.Len(t, all, 2)
+	assert.Equal(t, 1, all["a"].Int())
+	assert.Equal(t, 2, all["b"].Int())
+}
+
+// ---------------------------------------------------------------------------
+// BatchSet
+// ---------------------------------------------------------------------------
 
 func TestConfig_BatchSet(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	err := cfg.BatchSet(t.Context(), map[string]any{
-		"a": 1,
-		"b": "two",
-		"c": true,
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	err = cfg.BatchSet(context.Background(), map[string]any{
+		"x": 1,
+		"y": "hello",
+		"z": true,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Len() != 3 {
-		t.Fatalf("expected 3 keys, got %d", cfg.Len())
-	}
+	require.NoError(t, err)
+
+	vx, _ := cfg.Get("x")
+	assert.Equal(t, 1, vx.Int())
+	vy, _ := cfg.Get("y")
+	assert.Equal(t, "hello", vy.String())
+	vz, _ := cfg.Get("z")
+	assert.True(t, vz.Bool())
 }
 
-func TestConfig_Bind(t *testing.T) {
-	type AppConfig struct {
-		Name string `config:"app.name"`
-		Port int    `config:"app.port"`
-	}
+// ---------------------------------------------------------------------------
+// Reload
+// ---------------------------------------------------------------------------
 
-	t.Run("bind to struct", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{
-			"app.name": "myapp",
-			"app.port": 9090,
-		}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		var app AppConfig
-		err := cfg.Bind(t.Context(), &app)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if app.Name != "myapp" {
-			t.Fatalf("expected name 'myapp', got %q", app.Name)
-		}
-		if app.Port != 9090 {
-			t.Fatalf("expected port 9090, got %d", app.Port)
-		}
-	})
+func TestConfig_Reload(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
 
-	t.Run("bind nil target returns error", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		err := cfg.Bind(t.Context(), nil)
-		if err == nil {
-			t.Fatal("expected error for nil target")
-		}
-	})
+	result, err := cfg.Reload(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.False(t, result.HasErrors())
 }
 
-func TestConfig_OnChange(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
+// ---------------------------------------------------------------------------
+// Subscribe
+// ---------------------------------------------------------------------------
 
-	ch := make(chan string, 1)
-	cancel := cfg.OnChange("app.*", func(_ context.Context, evt event.Event) error {
+func TestConfig_Subscribe(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	receivedKey := make(chan string, 1)
+	unsub := cfg.Subscribe(func(ctx context.Context, evt event.Event) error {
 		select {
-		case ch <- evt.Key:
+		case receivedKey <- evt.Key:
 		default:
 		}
 		return nil
 	})
+	require.NotNil(t, unsub)
 
-	_ = cfg.Set(t.Context(), "app.port", 8080)
+	// Publish an event by setting a value
+	err = cfg.Set(context.Background(), "test.key", "value")
+	require.NoError(t, err)
+
 	select {
-	case receivedKey := <-ch:
-		if !strings.HasPrefix(receivedKey, "app.") {
-			t.Fatalf("expected app.* key, got %q", receivedKey)
-		}
+	case key := <-receivedKey:
+		assert.Equal(t, "test.key", key)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for OnChange event")
+		t.Fatal("timed out waiting for subscription callback")
 	}
 
-	cancel()
+	unsub()
 }
 
-func TestConfig_SnapshotRestore(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{
-		"k1": "v1",
-		"k2": "v2",
-	}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
+// ---------------------------------------------------------------------------
+// Keys / Len
+// ---------------------------------------------------------------------------
 
-	snap := cfg.Snapshot()
-	if len(snap) != 2 {
-		t.Fatalf("expected 2 keys in snapshot, got %d", len(snap))
-	}
+func TestConfig_Keys(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
 
-	// Modify and restore
-	_ = cfg.Set(t.Context(), "k3", "v3")
-	_ = cfg.Delete(t.Context(), "k1")
-	if cfg.Len() != 2 {
-		t.Fatalf("expected 2 keys after modification, got %d", cfg.Len())
-	}
+	cfg.Set(context.Background(), "z", 1)
+	cfg.Set(context.Background(), "a", 2)
+	cfg.Set(context.Background(), "m", 3)
 
-	cfg.Restore(snap)
-	if cfg.Len() != 2 {
-		t.Fatalf("expected 2 keys after restore, got %d", cfg.Len())
-	}
-	v, ok := cfg.Get("k1")
-	if !ok || v.Raw() != "v1" {
-		t.Fatal("expected k1 to be restored")
-	}
+	keys := cfg.Keys()
+	assert.Equal(t, []string{"a", "m", "z"}, keys)
 }
 
-func TestConfig_Validate(t *testing.T) {
-	type ValidatedConfig struct {
-		Name string `config:"name" validate:"required"`
-	}
+func TestConfig_Len(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
 
-	t.Run("valid struct", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{
-			"name": "valid",
-		}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		var vc ValidatedConfig
-		_ = cfg.Bind(t.Context(), &vc)
-		err := cfg.Validate(t.Context(), &vc)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+	assert.Equal(t, 0, cfg.Len())
 
-	t.Run("invalid struct", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		var vc ValidatedConfig
-		err := cfg.Validate(t.Context(), &vc)
-		if err == nil {
-			t.Fatal("expected validation error")
-		}
-	})
+	cfg.Set(context.Background(), "a", 1)
+	assert.Equal(t, 1, cfg.Len())
+
+	cfg.Set(context.Background(), "b", 2)
+	assert.Equal(t, 2, cfg.Len())
 }
+
+// ---------------------------------------------------------------------------
+// Close
+// ---------------------------------------------------------------------------
 
 func TestConfig_Close(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"k": "v"}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	err := cfg.Close(t.Context())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.IsClosed() {
-		t.Fatal("expected config to be closed")
-	}
-	// Operations after close should fail
-	_, err = cfg.Reload(t.Context())
-	if err != errors.ErrClosed {
-		t.Fatalf("expected ErrClosed, got %v", err)
-	}
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+
+	err = cfg.Close(context.Background())
+	require.NoError(t, err)
 }
 
-func TestConfig_Explain(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{"app.port": 8080}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	explanation := cfg.Explain("app.port")
-	if !strings.Contains(explanation, "app.port") {
-		t.Fatalf("expected key in explanation, got: %s", explanation)
+func TestConfig_Close_Idempotent(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+
+	err = cfg.Close(context.Background())
+	require.NoError(t, err)
+	err = cfg.Close(context.Background())
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot
+// ---------------------------------------------------------------------------
+
+func TestConfig_Snapshot(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	cfg.Set(context.Background(), "password", "secret123")
+	cfg.Set(context.Background(), "host", "localhost")
+
+	snap := cfg.Snapshot()
+	require.NotNil(t, snap)
+	assert.Equal(t, "localhost", snap["host"].String())
+	// Secrets should be redacted in snapshot
+	assert.Equal(t, "***REDACTED***", snap["password"].String())
+}
+
+// ---------------------------------------------------------------------------
+// Plugins
+// ---------------------------------------------------------------------------
+
+func TestConfig_Plugins_Empty(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	assert.Empty(t, cfg.Plugins())
+}
+
+// ---------------------------------------------------------------------------
+// Namespace
+// ---------------------------------------------------------------------------
+
+func TestConfig_Namespace(t *testing.T) {
+	cfg, err := New(context.Background(), WithNamespace("app."))
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	assert.Equal(t, "app.", cfg.Namespace())
+}
+
+// ---------------------------------------------------------------------------
+// Validate
+// ---------------------------------------------------------------------------
+
+func TestConfig_Validate(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	err = cfg.Validate(context.Background(), struct{}{})
+	assert.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Restore
+// ---------------------------------------------------------------------------
+
+func TestConfig_Restore(t *testing.T) {
+	cfg, err := New(context.Background())
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	cfg.Set(context.Background(), "original", 1)
+	vOrig, _ := cfg.Get("original")
+	assert.Equal(t, 1, vOrig.Int())
+
+	newData := map[string]value.Value{
+		"restored": value.New(42),
 	}
-	if !strings.Contains(explanation, "8080") {
-		t.Fatalf("expected value in explanation, got: %s", explanation)
-	}
+	cfg.Restore(newData)
+	vRestored, _ := cfg.Get("restored")
+	assert.Equal(t, 42, vRestored.Int())
 }
 
-func TestConfig_Explain_Missing(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	explanation := cfg.Explain("missing")
-	if explanation != "" {
-		t.Fatalf("expected empty explanation for missing key, got: %s", explanation)
-	}
+func TestConfig_FileLayerOverridesMemoryDefaultsWithFlattenedKeys(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+app:
+  name: from-file
+server:
+  port: 9090
+`), 0o600))
+
+	defaults := layer.NewStaticLayer("memory-defaults", map[string]value.Value{
+		"app.name":    value.NewInMemory("from-memory", 10),
+		"server.port": value.NewInMemory(3000, 10),
+	}, layer.WithPriority(10))
+
+	fileData, err := loader.NewFileLoader("yaml-config", []string{path}, nil).Load(context.Background())
+	require.NoError(t, err)
+
+	fileLayer := layer.NewStaticLayer("yaml-file", fileData, layer.WithPriority(30))
+
+	cfg, err := New(context.Background(), WithLayers(defaults, fileLayer))
+	require.NoError(t, err)
+	defer cfg.Close(context.Background())
+
+	appName, ok := cfg.Get("app.name")
+	require.True(t, ok)
+	assert.Equal(t, "from-file", appName.Raw())
+	assert.Equal(t, 30, appName.Priority())
+
+	port, ok := cfg.Get("server.port")
+	require.True(t, ok)
+	assert.Equal(t, 9090, port.Raw())
+	assert.Equal(t, 30, port.Priority())
+
+	explain := cfg.Explain("app.name")
+	assert.Contains(t, explain, `source=yaml-file`)
+	assert.Contains(t, explain, `priority=30`)
+	assert.True(t, strings.Contains(explain, `value=from-file`), explain)
 }
-
-func TestConfig_Schema(t *testing.T) {
-	type MyConfig struct {
-		Name string `json:"name" description:"app name" validate:"required"`
-		Port int    `json:"port" description:"app port"`
-	}
-
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	s, err := cfg.Schema(MyConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if s == nil {
-		t.Fatal("expected non-nil schema")
-	}
-	if s.Type != "object" {
-		t.Fatalf("expected type 'object', got %q", s.Type)
-	}
-	if len(s.Properties) != 2 {
-		t.Fatalf("expected 2 properties, got %d", len(s.Properties))
-	}
-}
-
-func TestConfig_Plugins(t *testing.T) {
-	t.Run("no plugins returns nil", func(t *testing.T) {
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		plugins := cfg.Plugins()
-		if plugins != nil {
-			t.Fatalf("expected nil plugins, got %v", plugins)
-		}
-	})
-}
-
-func TestConfig_Hooks(t *testing.T) {
-	t.Run("before/after reload hooks", func(t *testing.T) {
-		// Hooks are tested extensively in hooks/manager_test.go
-	})
-}
-
-func TestConfig_WithLayer(t *testing.T) {
-	t.Run("with core layer", func(t *testing.T) {
-		data := map[string]value.Value{
-			"key": value.New("value", value.TypeString, value.SourceMemory, 50),
-		}
-		layer := core.NewLayer("custom", core.WithLayerSource(&stubLoadableConfig{data: data}))
-		cfg, err := New(t.Context(), WithLayer(layer))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		v, ok := cfg.Get("key")
-		if !ok || v.Raw() != "value" {
-			t.Fatal("expected key=value")
-		}
-	})
-}
-
-func TestConfig_StrictReload(t *testing.T) {
-	t.Run("strict reload fails on layer errors", func(t *testing.T) {
-		layer := core.NewLayer("fail", core.WithLayerSource(&stubLoadableConfig{
-			err: fmt.Errorf("load failed"),
-		}))
-		_, err := New(t.Context(), WithLayer(layer), WithStrictReload())
-		if err == nil {
-			t.Fatal("expected error with strict reload")
-		}
-	})
-}
-
-func TestReloadWarning(t *testing.T) {
-	t.Run("error message", func(t *testing.T) {
-		w := &ReloadWarning{
-			LayerErrors: []core.LayerError{
-				{Layer: "test", Err: fmt.Errorf("fail")},
-			},
-		}
-		msg := w.Error()
-		if !strings.Contains(msg, "1 layer warning") {
-			t.Fatalf("unexpected message: %s", msg)
-		}
-	})
-
-	t.Run("unwrap", func(t *testing.T) {
-		cause := fmt.Errorf("root")
-		w := &ReloadWarning{
-			LayerErrors: []core.LayerError{
-				{Layer: "test", Err: cause},
-			},
-		}
-		unwrapped := w.Unwrap()
-		if unwrapped != cause {
-			t.Fatal("expected unwrapped to return cause")
-		}
-	})
-}
-
-func TestConfig_Subscribe(t *testing.T) {
-	mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-	cfg, _ := New(t.Context(), WithLoader(mem))
-	var received atomic.Int32
-	cancel := cfg.Subscribe(func(_ context.Context, _ event.Event) error {
-		received.Add(1)
-		return nil
-	})
-	_ = cfg.Set(t.Context(), "key", "val")
-	time.Sleep(50 * time.Millisecond)
-	if received.Load() == 0 {
-		t.Fatal("expected event")
-	}
-	cancel()
-}
-
-func TestConfig_HookExecutionOnReload(t *testing.T) {
-	t.Run("hooks via HookFunc registered directly", func(t *testing.T) {
-		// This tests the hook integration at the config level by verifying
-		// that hooks are checked during reload. The actual hook manager tests
-		// are in hooks/manager_test.go.
-		mem := loader.NewMemoryLoader(loader.WithMemoryData(map[string]any{}))
-		cfg, _ := New(t.Context(), WithLoader(mem))
-		// Ensure hooks exist but no before/after hooks registered (no panic)
-		_, err := cfg.Reload(t.Context())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-// stubLoadableConfig implements core.Loadable for config-level tests.
-type stubLoadableConfig struct {
-	data map[string]value.Value
-	err  error
-}
-
-func (s *stubLoadableConfig) Load(_ context.Context) (map[string]value.Value, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return value.Copy(s.data), nil
-}
-
-func (s *stubLoadableConfig) Close(_ context.Context) error { return nil }

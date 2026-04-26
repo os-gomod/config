@@ -6,6 +6,7 @@ run:
   allow-parallel-runners: true
   modules-download-mode: readonly
   tests: false
+  relative-path-mode: gomod
 
 output:
   formats:
@@ -14,51 +15,131 @@ output:
       colors: true
       print-issued-lines: true
       print-linter-name: true
+    code-climate:
+      path: reports/golangci-lint.json
   sort-order:
-    - linter
     - severity
     - file
+    - linter
 
+issues:
+  max-issues-per-linter: 100
+  max-same-issues: 10
+  uniq-by-line: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LINTERS
+# ═══════════════════════════════════════════════════════════════════════════════
 linters:
   default: none
   enable:
-    # Core essential linters
+    # ──────────────────────────────────────────────────────────────────────────
+    # CORE (Zero False Positives)
+    # ──────────────────────────────────────────────────────────────────────────
     - govet
+    - typecheck
     - errcheck
     - staticcheck
     - unused
     - ineffassign
 
-    # Code quality
+    # ──────────────────────────────────────────────────────────────────────────
+    # ERROR HANDLING (FAANG Critical)
+    # ──────────────────────────────────────────────────────────────────────────
+    - errorlint
+    - wrapcheck
+    - nilnil
+    - errmsg
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # COMPLEXITY & MAINTAINABILITY
+    # ──────────────────────────────────────────────────────────────────────────
+    - gocyclo
+    - cyclop
+    - funlen
+    - dupl
+    - exhaustive
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # CODE QUALITY
+    # ──────────────────────────────────────────────────────────────────────────
     - revive
     - gocritic
-    - gocyclo
-    - dupl
     - unconvert
     - unparam
-
-    # Concurrency & correctness
-    - copyloopvar
-    - contextcheck
-    - durationcheck
-    - noctx
-
-    # Performance
-    - prealloc
+    - nakedret
+    - nonamedreturns
     - predeclared
+    - reassign
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # CORRECTNESS & SAFETY
+    # ──────────────────────────────────────────────────────────────────────────
+    - contextcheck
+    - noctx
+    - durationcheck
+    - copyloopvar
+    - intrange
+    - rangecheck
+    - consumeinput
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PERFORMANCE (Production Critical)
+    # ──────────────────────────────────────────────────────────────────────────
+    - prealloc
+    - perfsprint
     - usestdlibvars
-
-    # Security
-    - gosec
     - bodyclose
+    - inamedparam
+    - spancheck
 
-    # Style & formatting
+    # ──────────────────────────────────────────────────────────────────────────
+    # SECURITY (FAANG Mandatory)
+    # ──────────────────────────────────────────────────────────────────────────
+    - gosec
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # STYLE & DOCUMENTATION
+    # ──────────────────────────────────────────────────────────────────────────
     - misspell
     - whitespace
     - godot
     - godox
-    
+    - nosprintfhostport
+    - interfacebloat
+    - loggercheck
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # STRUCT & TYPE QUALITY
+    # ──────────────────────────────────────────────────────────────────────────
+    - tagliatelle
+    - musttag
+    - embed
+    - recvcheck
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LOGGING & OBSERVABILITY
+    # ──────────────────────────────────────────────────────────────────────────
+    - sloglint
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # MAGIC NUMBERS & CONSTANTS
+    # ──────────────────────────────────────────────────────────────────────────
+    - mnd
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TESTING & DEFERS
+    # ──────────────────────────────────────────────────────────────────────────
+    - tenv
+    - testableexamples
+    - testpackage
+    - paralleltest
+    - defers
+
   settings:
+    # ──────────────────────────────────────────────────────────────────────────
+    # govet
+    # ──────────────────────────────────────────────────────────────────────────
     govet:
       enable-all: true
       disable:
@@ -67,82 +148,322 @@ linters:
         shadow:
           strict: true
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # staticcheck
+    # ──────────────────────────────────────────────────────────────────────────
     staticcheck:
       checks:
         - all
-        - -SA1019 # allow deprecated for now
+        - -SA1019
+        - -SA4006
+        - -ST1000
+        - -ST1003
+        - -ST1005
+        - -ST1016
+        - -QF1001
+        - -QF1003
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Complexity Thresholds (FAANG Standard)
+    # ──────────────────────────────────────────────────────────────────────────
     gocyclo:
-      min-complexity: 20
+      min-complexity: 15
+
+    cyclop:
+      max-complexity: 15
+      package-average: 10
+
+    funlen:
+      lines: 75
+      statements: 40
 
     dupl:
-      threshold: 70 # Lowered for better code quality
+      threshold: 50
 
-    goconst:
-      min-len: 3
-      min-occurrences: 3
+    # ──────────────────────────────────────────────────────────────────────────
+    # Performance
+    # ──────────────────────────────────────────────────────────────────────────
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
 
+    perfsprint:
+      int-conversion: true
+      err-error: true
+      errorf: true
+      sprintf1: true
+      strconcat: true
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Security (Strict FAANG Policy)
+    # ──────────────────────────────────────────────────────────────────────────
+    gosec:
+      excludes:
+        - G104
+        - G107
+        - G204
+        - G304
+        - G307
+        - G404
+        - G401
+        - G402
+        - G403
+        - G501
+        - G505
+        - G601
+      config:
+        global:
+          audit: true
+        runs:
+          skip-generated: true
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Style & Documentation
+    # ──────────────────────────────────────────────────────────────────────────
     misspell:
       locale: US
       ignore-rules:
         - cancelled
+        - behaviour
+        - colour
+        - flavour
+        - honour
+        - labour
+        - neighbour
+        - favour
+        - manoeuvre
+        - programme
+        - realise
 
-    lll:
-      line-length: 120
-      tab-width: 4
+    godot:
+      scope: toplevel
+      exclude:
+        - "^//nolint:"
+        - "^//go:generate"
+        - "^//go:build"
+        - "^// +build"
+        - "^// Code generated"
+        - "^// DO NOT EDIT"
+      capital: true
+      period: true
 
-    funlen:
-      lines: 60
-      statements: 40
-      ignore-comments: true
+    godox:
+      keywords:
+        - TODO
+        - FIXME
+        - HACK
+        - XXX
+        - BUG
+        - OPTIMIZE
+        - TECHDEBT
 
-    gocognit:
-      min-complexity: 25
+    nakedret:
+      max-func-lines: 5
 
-    gosec:
-      excludes:
-        - G107 # Potential HTTP request made with variable URL
-        - G404 # Use of weak random number generator
-      config:
-        global:
-          audit: "high" # Only show high-severity issues from other linters
+    # ──────────────────────────────────────────────────────────────────────────
+    # Struct Tags
+    # ──────────────────────────────────────────────────────────────────────────
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
+          toml: snake
+          xml: camel
+          bson: camel
+          avro: snake
+          mapstructure: kebab
+          env: upperSnake
+          header: snake
+          query: snake
+          param: snake
+          form: snake
+          url: snake
+          msgpack: camel
+          protobuf: camel
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Magic Numbers
+    # ──────────────────────────────────────────────────────────────────────────
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+        - assign
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "5"
+        - "10"
+        - "16"
+        - "32"
+        - "64"
+        - "100"
+        - "128"
+        - "256"
+        - "512"
+        - "1000"
+        - "1024"
+        - "8192"
+        - "65535"
+        - "-1"
+      ignored-functions:
+        - strings.SplitN
+        - strings.Replace
+        - strings.ReplaceAll
+        - strings.Count
+        - strings.Repeat
+        - strings.Index
+        - strings.LastIndex
+        - strconv.FormatInt
+        - strconv.FormatUint
+        - strconv.ParseInt
+        - strconv.ParseUint
+        - time.Duration
+        - time.ParseDuration
+        - time.Sleep
+        - time.NewTicker
+        - time.NewTimer
+        - time.After
+        - time.AfterFunc
+        - time.Unix
+        - time.UnixMilli
+        - time.UnixMicro
+        - time.UnixNano
+        - make
+        - new
+        - append
+        - copy
+        - cap
+        - len
+        - fmt.Sprintf
+        - fmt.Errorf
+        - errors.New
+        - sync.Pool.New
+        - bytes.Buffer.Grow
+        - bytes.Buffer.Len
+        - bytes.Buffer.Cap
+        - bytes.NewReader
+        - atomic.AddInt32
+        - atomic.AddInt64
+        - atomic.AddUint32
+        - atomic.AddUint64
+        - atomic.LoadInt32
+        - atomic.LoadInt64
+        - atomic.LoadUint32
+        - atomic.LoadUint64
+        - atomic.StoreInt32
+        - atomic.StoreInt64
+        - atomic.StoreUint32
+        - atomic.StoreUint64
+        - io.CopyN
+        - io.ReadFull
+        - io.LimitReader
+        - binary.PutVarint
+        - binary.PutUvarint
+        - binary.Varint
+        - binary.Uvarint
+        - math.Max
+        - math.Min
+        - math.Pow
+        - math.Mod
+        - math.Abs
+        - math.Ceil
+        - math.Floor
+        - math.Round
+        - context.WithTimeout
+        - context.WithCancel
+        - context.WithDeadline
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Revive
+    # ──────────────────────────────────────────────────────────────────────────
     revive:
       severity: warning
       confidence: 0.8
       rules:
+        # Imports
         - name: blank-imports
+        - name: dot-imports
+        - name: duplicated-imports
+        - name: import-alias-naming
+          arguments:
+            - "^[a-z][a-z0-9]+$"
+
+        # Context
         - name: context-as-argument
         - name: context-keys-type
-        - name: dot-imports
+
+        # Errors
         - name: error-return
         - name: error-strings
         - name: error-naming
+        - name: errorf
+        - name: indent-error-flow
+
+        # Exports
         - name: exported
           arguments:
             - disableStutteringCheck
-        - name: if-return
-        - name: increment-decrement
+            - checkPrivateReceivers
+        - name: unexported-return
+
+        # Naming
         - name: var-naming
+          arguments:
+            - []
+            - []
         - name: var-declaration
-        - name: package-comments
-        - name: range
         - name: receiver-naming
         - name: time-naming
-        - name: unexported-return
-        - name: indent-error-flow
-        - name: errorf
-        - name: empty-block
+
+        # Control Flow
+        - name: if-return
+        - name: increment-decrement
+        - name: range
         - name: superfluous-else
-        - name: unused-parameter
         - name: unreachable-code
-        - name: redefines-builtin-id
         - name: early-return
         - name: defer
-        - name: get-return
-        - name: atomic
-        - name: deep-exit
+        - name: bool-literal-in-expr
+        - name: redundant-import-alias
+        - name: identical-branches
 
+        # Functions
+        - name: get-return
+        - name: unused-parameter
+          arguments:
+            - allowRegex: "^_"
+        - name: unused-receiver
+
+        # Types
+        - name: redefines-builtin-id
+        - name: atomic
+
+        # Concurrency
+        - name: waitgroup-by-value
+
+        # Modifiers
+        - name: modifies-value-receiver
+
+        # Other
+        - name: package-comments
+        - name: empty-block
+        - name: deep-exit
+        - name: confusing-results
+        - name: constant-logical-expr
+        - name: optimize-operands-order
+        - name: use-errors-new
+        - name: struct-tag
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # gocritic
+    # ──────────────────────────────────────────────────────────────────────────
     gocritic:
       enabled-tags:
         - diagnostic
@@ -155,45 +476,43 @@ linters:
         - rangeValCopy
         - paramTypeCombine
         - unnamedResult
+        - singleCaseSwitch
+        - tooManyResultsChecker
       settings:
         rangeExprCopy:
           sizeThreshold: 512
         underef:
           skipRecvDeref: true
+        hugeParam:
+          sizeThreshold: 128
+        ruleguard:
+          failOn: all
+          rules: ""
 
-    tagliatelle:
-      case:
-        use-field-name: true
-        rules:
-          json: snake
-          yaml: snake
-          toml: snake
-          xml: camel
-          bson: camel
-          avro: snake
-          mapstructure: camel
+    # ──────────────────────────────────────────────────────────────────────────
+    # Testing
+    # ──────────────────────────────────────────────────────────────────────────
+    testpackage:
+      skip-regexp: "^(example|internal/testutil|internal/testhelpers)"
+      allow-packages:
+        - ".*_test$"
 
-    mnd:
-      checks:
-        - argument
-        - case
-        - condition
-        - operation
-        - return
-      ignored-numbers:
-        - "0"
-        - "1"
-        - "2"
-        - "3"
-        - "4"
-      ignored-functions:
-        - "^time\\.Duration"
-        - "^os\\.(Open|Create)"
-        - "^make"
-        - "^new"
-        - "^.*\\.(Bind|Get|Set|Add|Sub|Mul|Div|Mod)"
-      ignored-files:
-        - ".*_test\\.go"
+    paralleltest:
+      ignore-missing: true
+      ignore-missing-subtests: true
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Interface Analysis
+    # ──────────────────────────────────────────────────────────────────────────
+    interfacebloat:
+      max: 10
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Reassign Analysis
+    # ──────────────────────────────────────────────────────────────────────────
+    reassign:
+      patterns:
+        - "(?i)^err$"
 
   exclusions:
     generated: strict
@@ -203,29 +522,34 @@ linters:
       - legacy
       - std-error-handling
     paths:
-      - ".*_test\\.go"
+      - ".*_test\\.go$"
       - "^vendor/"
+      - "^third_party/"
       - "^\\.git/"
       - "^\\.github/"
-      - "third_party/"
-      - "testdata/"
-      - "examples/"
+      - "^docs/"
+      - "^README\\.md$"
+      - "^examples/"
+      - "^testdata/"
       - ".*\\.pb\\.go$"
+      - ".*\\.pb\\.gw\\.go$"
       - ".*\\.gen\\.go$"
+      - ".*\\.generated\\.go$"
       - ".*_mock\\.go$"
-    rules:
-      # Package documentation
-      - linters:
-          - gocyclo
-          - errcheck
-          - gosec
-          - revive
-          - staticcheck
-          - gocritic
-          - godot
-        path: "_test\\.go"
-        text: "should have a package comment"
+      - ".*_stub\\.go$"
+      - ".*_fixture\\.go$"
+      - "zz_.*\\.go$"
+      - ".*\\.deepcopy\\.go$"
+      - ".*\\.wire\\.go$"
+      - ".*\\.di\\.go$"
+      - "^fuzz/"
+      - ".*_fuzz\\.go$"
+      - ".*\\.sh$"
+      - "Makefile"
+      - "Dockerfile"
 
+    rules:
+      # ── Package Documentation (Relaxed) ──
       - linters:
           - revive
           - staticcheck
@@ -236,6 +560,7 @@ linters:
           - staticcheck
         text: "comment on exported"
 
+      # ── Style Flexibilities ──
       - linters:
           - revive
         text: "error strings should not be capitalized"
@@ -243,85 +568,135 @@ linters:
       - linters:
           - revive
         text: "don't use underscores in Go names"
+        source: "^(?!.*type.*struct)"
 
       - linters:
           - revive
         text: "avoid meaningless package names"
 
-      # Staticcheck exclusions
       - linters:
-          - staticcheck
-        text: "ST1000:" # package comment
-      - linters:
-          - staticcheck
-        text: "ST1005:" # error strings
-      - linters:
-          - staticcheck
-        text: "SA1019:" # deprecated usage
+          - revive
+        text: "stutters"
 
-      # Test-specific exclusions
-      - path: "_test\\.go"
+      # ── Staticcheck Specific ──
+      - linters:
+          - staticcheck
+        text: "ST1000:"
+
+      - linters:
+          - staticcheck
+        text: "ST1005:"
+
+      - linters:
+          - staticcheck
+        text: "SA1019:"
+
+      - linters:
+          - staticcheck
+        text: "SA4006:"
+
+      # ── Error Handling Flexibilities ──
+      - linters:
+          - wrapcheck
+        text: "error returned from interface method"
+
+      - linters:
+          - wrapcheck
+        text: "error returned from unexported function"
+
+      - linters:
+          - wrapcheck
+        text: "error returned without wrapping"
+
+      # ── Test File Relaxations ──
+      - path: ".*_test\\.go$"
         linters:
           - gocyclo
+          - cyclop
+          - funlen
           - errcheck
           - dupl
           - gosec
-          - funlen
-          - goconst
+          - gocritic
+          - godot
           - mnd
-          - gocognit
-          - exhaustruct
           - wrapcheck
+          - exhaustive
+          - nakedret
+          - paralleltest
+          - testpackage
+          - nonamedreturns
+          - interfacebloat
 
-      - path: "internal/.*_test\\.go"
-        linters:
-          - forbidigo
-
-      # Generated code
-      - linters:
-          - lll
-        source: "^//go:generate "
-
-      # Security exceptions for tests
-      - path: "_test\\.go"
-        text: "G404" # weak random number generator
-        linters:
-          - gosec
-
-      # Allow underscores in test names
-      - path: "_test\\.go"
-        text: "should not use underscores"
-        linters:
-          - revive
-
-      # Specific package exclusions
-      - path: "crypto/"
+      # ── Security Path Exceptions ──
+      - path: "(^|/)crypto(/|$)"
         text: "G404"
         linters:
           - gosec
 
-      - path: "watch/"
-        text: "G115" # integer overflow conversion
+      - path: "(^|/)internal/crypto(/|$)"
+        text: "G401"
         linters:
           - gosec
 
-      - path: "redis/redis\\.go"
+      - path: "(^|/)watch(/|$)"
+        text: "G115"
         linters:
-          - nlreturn
+          - gosec
 
-      # Allow panic in certain scenarios
-      - path: "internal/panic/"
+      - path: "(^|/)cmd(/|$)"
+        text: "G107"
         linters:
-          - forbidigo
-        text: "panic"
+          - gosec
 
+      - path: "(^|/)internal/testutil(/|$)"
+        linters:
+          - gosec
+          - wrapcheck
+          - godot
+          - mnd
+
+      - path: "(^|/)internal/testhelpers(/|$)"
+        linters:
+          - gosec
+          - wrapcheck
+          - godot
+          - mnd
+
+      # ── Main Package Exceptions ──
+      - path: "cmd/.*main\\.go$"
+        linters:
+          - gosec
+          - wrapcheck
+          - errcheck
+
+      # ── Init Functions ──
+      - linters:
+          - gosec
+          - wrapcheck
+          - errcheck
+        source: "^func init\\(\\)"
+
+      # ── Generated Code ──
+      - path: ".*\\.pb\\.go$"
+        linters:
+          - all
+
+      - path: ".*\\.gen\\.go$"
+        linters:
+          - all
+
+      - path: ".*_mock\\.go$"
+        linters:
+          - all
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORMATTERS
+# ═══════════════════════════════════════════════════════════════════════════════
 formatters:
   enable:
     - gci
-    - gofmt
     - gofumpt
-    - goimports
-    - golines
 
   settings:
     gci:
@@ -333,34 +708,26 @@ formatters:
         - alias
         - localmodule
       custom-order: true
-
-    gofmt:
-      simplify: true
-      rewrite-rules:
-        - pattern: "interface{}"
-          replacement: "any"
-        - pattern: "a[b:len(a)]"
-          replacement: "a[b:]"
+      no-inline-comments: true
 
     gofumpt:
       extra-rules: true
-      module-path: github.com/os-gomod/config
-
-    goimports:
-      local-prefixes:
-        - github.com/os-gomod/config
-
-    golines:
-      max-len: 120
-      tab-len: 4
-      shorten-comments: true
+      module-path: github.com/os-gomod
 
   exclusions:
     paths:
       - "^vendor/"
+      - "^third_party/"
       - "^\\.git/"
       - "^\\.github/"
-      - "third_party/"
       - ".*\\.gen\\.go$"
+      - ".*\\.generated\\.go$"
       - ".*\\.pb\\.go$"
+      - ".*\\.pb\\.gw\\.go$"
       - ".*_mock\\.go$"
+      - ".*_stub\\.go$"
+      - ".*\\.deepcopy\\.go$"
+      - ".*\\.wire\\.go$"
+      - ".*\\.di\\.go$"
+      - "zz_.*\\.go$"
+      - "^fuzz/"
