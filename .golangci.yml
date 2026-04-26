@@ -48,7 +48,6 @@ linters:
     - errorlint
     - wrapcheck
     - nilnil
-    - errmsg
 
     # ──────────────────────────────────────────────────────────────────────────
     # COMPLEXITY & MAINTAINABILITY
@@ -79,8 +78,6 @@ linters:
     - durationcheck
     - copyloopvar
     - intrange
-    - rangecheck
-    - consumeinput
 
     # ──────────────────────────────────────────────────────────────────────────
     # PERFORMANCE (Production Critical)
@@ -113,7 +110,6 @@ linters:
     # ──────────────────────────────────────────────────────────────────────────
     - tagliatelle
     - musttag
-    - embed
     - recvcheck
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -129,11 +125,9 @@ linters:
     # ──────────────────────────────────────────────────────────────────────────
     # TESTING & DEFERS
     # ──────────────────────────────────────────────────────────────────────────
-    - tenv
     - testableexamples
     - testpackage
     - paralleltest
-    - defers
 
   settings:
     # ──────────────────────────────────────────────────────────────────────────
