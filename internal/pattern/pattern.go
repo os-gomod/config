@@ -1,48 +1,47 @@
-// Package pattern provides glob-style pattern matching for configuration keys.
-// It supports the * (matches any sequence) and ? (matches single character) wildcards.
+// Package pattern provides lightweight glob-style matching for event keys.
+//
+// Supported patterns:
+//   - "*"            matches everything (catch-all)
+//   - "prefix.*"     matches keys starting with "prefix."
+//   - "exact.key"    matches only that exact key
+//   - "app.*.config" matches "app.db.config", "app.cache.config", etc.
+//   - "*.changed"    matches "config.changed", "secrets.changed", etc.
 package pattern
 
-// Match reports whether the key matches the given pattern using glob-style matching.
-// A pattern of "*" or "" matches all keys.
-//
-// Examples:
-//
-//	pattern.Match("db.host", "db.*")     // true
-//	pattern.Match("db.host", "*.host")   // true
-//	pattern.Match("db.host", "db.h?st")  // true
-//	pattern.Match("db.host", "server.*") // false
+import "strings"
+
+// Match checks if a key matches a pattern using simple glob rules.
+// The only wildcard character is '*' which matches exactly one
+// dot-separated segment (not an arbitrary substring).
 func Match(key, pat string) bool {
 	if pat == "*" || pat == "" {
 		return true
 	}
-	return matchGlob(key, pat)
+	if key == pat {
+		return true
+	}
+
+	// Split both on '.'
+	keyParts := strings.Split(key, ".")
+	patParts := strings.Split(pat, ".")
+
+	return globMatch(keyParts, patParts)
 }
 
-// matchGlob implements glob matching using dynamic programming.
-// It supports '*' (matches zero or more characters) and '?' (matches exactly one).
-func matchGlob(s, pattern string) bool {
-	m, n := len(s), len(pattern)
-	prev := make([]bool, n+1)
-	curr := make([]bool, n+1)
-	prev[0] = true
-	for j := 1; j <= n; j++ {
-		if pattern[j-1] == '*' {
-			prev[j] = prev[j-1]
+// globMatch checks if key segments match pattern segments.
+// '*' in the pattern matches exactly one segment.
+func globMatch(keyParts, patParts []string) bool {
+	if len(keyParts) != len(patParts) {
+		return false
+	}
+
+	for i := range patParts {
+		if patParts[i] == "*" {
+			continue
+		}
+		if patParts[i] != keyParts[i] {
+			return false
 		}
 	}
-	for i := 1; i <= m; i++ {
-		curr[0] = false
-		for j := 1; j <= n; j++ {
-			switch pattern[j-1] {
-			case '*':
-				curr[j] = prev[j] || curr[j-1]
-			case '?', s[i-1]:
-				curr[j] = prev[j-1]
-			default:
-				curr[j] = false
-			}
-		}
-		prev, curr = curr, prev
-	}
-	return prev[n]
+	return true
 }

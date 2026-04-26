@@ -1,0 +1,49 @@
+[app]
+name = "toml-os-gomod-demo"
+environment = "development"
+
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[database]
+host = "localhost"
+user = "postgres"
+password = "local_postgres_password"
+name = "app_dev_local"
+sslmode = "disable"
+
+[logging]
+level = "debug"
+format = "console"
+output = "stdout"
+
+[redis]
+host = "localhost"
+port = 6379
+password = ""
+
+[debug]
+enabled = true
+pprof = true
+profiling_port = 6060
+
+[dev_tools]
+hot_reload = true
+mock_services = true
+verbose_errors = true
+
+[feature_flags.new_ui]
+enabled = true
+
+[feature_flags.dark_mode]
+enabled = true
+
+[feature_flags.rollout_v2]
+enabled = true
+percentage = 100.0
+
+[testing]
+mock_database = true
+mock_redis = true
+fixture_auto_load = true
