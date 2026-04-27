@@ -83,7 +83,7 @@ func (g *Generator) Generate(v any) (*Schema, error) {
 			continue
 		}
 
-		f := g.generateField(field)
+		f := g.generateField(&field)
 		schema.Fields = append(schema.Fields, f)
 
 		if f.Required {
@@ -95,7 +95,7 @@ func (g *Generator) Generate(v any) (*Schema, error) {
 }
 
 // generateField creates a Field descriptor from a reflect.StructField.
-func (g *Generator) generateField(sf reflect.StructField) Field {
+func (g *Generator) generateField(sf *reflect.StructField) Field {
 	f := Field{
 		Name:   fieldName(sf),
 		Type:   typeName(sf.Type),
@@ -127,7 +127,7 @@ func (g *Generator) generateField(sf reflect.StructField) Field {
 			if !nestedField.IsExported() {
 				continue
 			}
-			f.Fields = append(f.Fields, g.generateField(nestedField))
+			f.Fields = append(f.Fields, g.generateField(&nestedField))
 		}
 	}
 
@@ -140,7 +140,7 @@ func (g *Generator) generateField(sf reflect.StructField) Field {
 
 // fieldName extracts the config key name from a struct field.
 // Uses the "config" tag if present, otherwise the lowercase field name.
-func fieldName(sf reflect.StructField) string {
+func fieldName(sf *reflect.StructField) string {
 	tag := sf.Tag.Get("config")
 	if tag == "" {
 		return strings.ToLower(sf.Name)

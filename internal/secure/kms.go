@@ -69,6 +69,8 @@ func (s *stubKMSClient) health() error {
 // NewKMSStore creates a KMSStore with the given configuration.
 // The actual KMS API client is a stub; replace with a real implementation
 // that uses the AWS SDK in production.
+//
+//nolint:gocritic // Config is intentionally copied to avoid external mutation
 func NewKMSStore(cfg Config) *KMSStore {
 	store := &KMSStore{
 		config: cfg,

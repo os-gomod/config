@@ -30,21 +30,21 @@ func newWorker(id int, jobs <-chan dispatchJob, bus *Bus) *worker {
 // and processes each dispatchJob until the channel is closed.
 func (w *worker) start() {
 	for job := range w.jobs {
-		w.process(job)
+		w.process(&job)
 	}
 }
 
 // process iterates over all matched subscriptions and attempts delivery
 // for each one, respecting the retry configuration.
-func (w *worker) process(job dispatchJob) {
+func (w *worker) process(job *dispatchJob) {
 	for _, sub := range job.subs {
-		w.deliverWithRetry(job.evt, sub)
+		w.deliverWithRetry(&job.evt, sub)
 	}
 }
 
 // deliverWithRetry attempts to deliver an event to a subscriber,
 // retrying up to RetryCount times with exponential backoff.
-func (w *worker) deliverWithRetry(evt event.Event, sub subscription) {
+func (w *worker) deliverWithRetry(evt *event.Event, sub subscription) {
 	var err error
 
 	for attempt := 0; attempt <= w.bus.config.RetryCount; attempt++ {
@@ -74,7 +74,7 @@ func (w *worker) deliverWithRetry(evt event.Event, sub subscription) {
 // deliver invokes the observer with panic recovery. Any panic is
 // caught, forwarded to PanicHandler (if configured), and converted
 // to an error so the retry mechanism can handle it.
-func (w *worker) deliver(evt event.Event, sub subscription) (err error) {
+func (w *worker) deliver(evt *event.Event, sub subscription) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if w.bus.config.PanicHandler != nil {
@@ -84,5 +84,5 @@ func (w *worker) deliver(evt event.Event, sub subscription) (err error) {
 		}
 	}()
 
-	return sub.observer(context.Background(), evt)
+	return sub.observer(context.Background(), *evt)
 }

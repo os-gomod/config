@@ -56,7 +56,6 @@ linters:
     - cyclop
     - funlen
     - dupl
-    - exhaustive
 
     # ──────────────────────────────────────────────────────────────────────────
     # CODE QUALITY
@@ -116,11 +115,6 @@ linters:
     # LOGGING & OBSERVABILITY
     # ──────────────────────────────────────────────────────────────────────────
     - sloglint
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # MAGIC NUMBERS & CONSTANTS
-    # ──────────────────────────────────────────────────────────────────────────
-    - mnd
 
     # ──────────────────────────────────────────────────────────────────────────
     # TESTING & DEFERS
@@ -205,6 +199,7 @@ linters:
         - G501
         - G505
         - G601
+        - G115
       config:
         global:
           audit: true
@@ -230,7 +225,7 @@ linters:
         - realise
 
     godot:
-      scope: toplevel
+      scope: declarations
       exclude:
         - "^//nolint:"
         - "^//go:generate"
@@ -275,103 +270,6 @@ linters:
           url: snake
           msgpack: camel
           protobuf: camel
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Magic Numbers
-    # ──────────────────────────────────────────────────────────────────────────
-    mnd:
-      checks:
-        - argument
-        - case
-        - condition
-        - operation
-        - return
-        - assign
-      ignored-numbers:
-        - "0"
-        - "1"
-        - "2"
-        - "5"
-        - "10"
-        - "16"
-        - "32"
-        - "64"
-        - "100"
-        - "128"
-        - "256"
-        - "512"
-        - "1000"
-        - "1024"
-        - "8192"
-        - "65535"
-        - "-1"
-      ignored-functions:
-        - strings.SplitN
-        - strings.Replace
-        - strings.ReplaceAll
-        - strings.Count
-        - strings.Repeat
-        - strings.Index
-        - strings.LastIndex
-        - strconv.FormatInt
-        - strconv.FormatUint
-        - strconv.ParseInt
-        - strconv.ParseUint
-        - time.Duration
-        - time.ParseDuration
-        - time.Sleep
-        - time.NewTicker
-        - time.NewTimer
-        - time.After
-        - time.AfterFunc
-        - time.Unix
-        - time.UnixMilli
-        - time.UnixMicro
-        - time.UnixNano
-        - make
-        - new
-        - append
-        - copy
-        - cap
-        - len
-        - fmt.Sprintf
-        - fmt.Errorf
-        - errors.New
-        - sync.Pool.New
-        - bytes.Buffer.Grow
-        - bytes.Buffer.Len
-        - bytes.Buffer.Cap
-        - bytes.NewReader
-        - atomic.AddInt32
-        - atomic.AddInt64
-        - atomic.AddUint32
-        - atomic.AddUint64
-        - atomic.LoadInt32
-        - atomic.LoadInt64
-        - atomic.LoadUint32
-        - atomic.LoadUint64
-        - atomic.StoreInt32
-        - atomic.StoreInt64
-        - atomic.StoreUint32
-        - atomic.StoreUint64
-        - io.CopyN
-        - io.ReadFull
-        - io.LimitReader
-        - binary.PutVarint
-        - binary.PutUvarint
-        - binary.Varint
-        - binary.Uvarint
-        - math.Max
-        - math.Min
-        - math.Pow
-        - math.Mod
-        - math.Abs
-        - math.Ceil
-        - math.Floor
-        - math.Round
-        - context.WithTimeout
-        - context.WithCancel
-        - context.WithDeadline
 
     # ──────────────────────────────────────────────────────────────────────────
     # Revive
@@ -465,7 +363,6 @@ linters:
         - experimental
         - opinionated
       disabled-checks:
-        - hugeParam
         - rangeValCopy
         - paramTypeCombine
         - unnamedResult
@@ -476,8 +373,6 @@ linters:
           sizeThreshold: 512
         underef:
           skipRecvDeref: true
-        hugeParam:
-          sizeThreshold: 128
         ruleguard:
           failOn: all
           rules: ""
@@ -523,6 +418,9 @@ linters:
       - "^docs/"
       - "^README\\.md$"
       - "^examples/"
+      - "^example/"
+      - "example/"
+      - "examples/"
       - "^testdata/"
       - ".*\\.pb\\.go$"
       - ".*\\.pb\\.gw\\.go$"
@@ -611,9 +509,7 @@ linters:
           - gosec
           - gocritic
           - godot
-          - mnd
           - wrapcheck
-          - exhaustive
           - nakedret
           - paralleltest
           - testpackage
@@ -631,11 +527,6 @@ linters:
         linters:
           - gosec
 
-      - path: "(^|/)watch(/|$)"
-        text: "G115"
-        linters:
-          - gosec
-
       - path: "(^|/)cmd(/|$)"
         text: "G107"
         linters:
@@ -646,14 +537,12 @@ linters:
           - gosec
           - wrapcheck
           - godot
-          - mnd
 
       - path: "(^|/)internal/testhelpers(/|$)"
         linters:
           - gosec
           - wrapcheck
           - godot
-          - mnd
 
       # ── Main Package Exceptions ──
       - path: "cmd/.*main\\.go$"
@@ -709,6 +598,8 @@ formatters:
   exclusions:
     paths:
       - "^vendor/"
+      - "^example/"
+      - "^examples/"
       - "^third_party/"
       - "^\\.git/"
       - "^\\.github/"

@@ -76,8 +76,8 @@ func (s *Schema) String() string {
 		b.WriteString("Required: " + strings.Join(s.Required, ", ") + "\n\n")
 	}
 
-	for _, f := range s.Fields {
-		renderField(&b, f, "  ")
+	for i := range s.Fields {
+		renderField(&b, &s.Fields[i], "  ")
 		b.WriteString("\n")
 	}
 
@@ -85,7 +85,7 @@ func (s *Schema) String() string {
 }
 
 // renderField writes a field's representation to the builder.
-func renderField(b *strings.Builder, f Field, indent string) {
+func renderField(b *strings.Builder, f *Field, indent string) {
 	// Field name and type.
 	req := ""
 	if f.Required {
@@ -122,7 +122,7 @@ func renderField(b *strings.Builder, f Field, indent string) {
 	if len(f.Fields) > 0 {
 		fmt.Fprintf(b, "%s  {\n", indent)
 		for _, nested := range f.Fields {
-			renderField(b, nested, indent+"    ")
+			renderField(b, &nested, indent+"    ")
 		}
 		fmt.Fprintf(b, "%s  }\n", indent)
 	}

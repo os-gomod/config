@@ -69,6 +69,8 @@ func (s *stubClient) health() error {
 // NewVaultStore creates a VaultStore with the given configuration.
 // The actual Vault API client is a stub; replace with a real implementation
 // that uses github.com/hashicorp/vault/api in production.
+//
+//nolint:gocritic // Config is intentionally copied to avoid external mutation
 func NewVaultStore(cfg Config) *VaultStore {
 	store := &VaultStore{
 		config: cfg,

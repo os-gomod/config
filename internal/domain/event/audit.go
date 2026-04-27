@@ -64,6 +64,8 @@ type Recorder interface {
 // ---------------------------------------------------------------------------
 
 // NewAuditEntry creates a new AuditEntry with sensible defaults.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func NewAuditEntry(action AuditAction, key, source, actor string) AuditEntry {
 	return AuditEntry{
 		Timestamp: time.Now().UTC(),
@@ -77,6 +79,8 @@ func NewAuditEntry(action AuditAction, key, source, actor string) AuditEntry {
 }
 
 // WithError sets the error on an AuditEntry and marks it as failed.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func (e AuditEntry) WithError(err error) AuditEntry {
 	e.Error = err.Error()
 	e.Result = "failure"
@@ -84,18 +88,24 @@ func (e AuditEntry) WithError(err error) AuditEntry {
 }
 
 // WithReason sets the human-readable reason.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func (e AuditEntry) WithReason(reason string) AuditEntry {
 	e.Reason = reason
 	return e
 }
 
 // WithTraceID sets the distributed trace ID.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func (e AuditEntry) WithTraceID(traceID string) AuditEntry {
 	e.TraceID = traceID
 	return e
 }
 
 // WithLabels adds labels to the audit entry.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func (e AuditEntry) WithLabels(labels map[string]string) AuditEntry {
 	e.Labels = labels
 	return e
@@ -103,6 +113,8 @@ func (e AuditEntry) WithLabels(labels map[string]string) AuditEntry {
 
 // WithValues sets the old and new values on the audit entry.
 // The values are always converted to strings and redacted if the key is a secret.
+//
+//nolint:gocritic // AuditEntry is immutable; copying is intentional for builder pattern
 func (e AuditEntry) WithValues(oldVal, newVal value.Value) AuditEntry {
 	oldStr := fmt.Sprint(oldVal.Raw())
 	newStr := fmt.Sprint(newVal.Raw())
@@ -122,10 +134,9 @@ func (e AuditEntry) WithValues(oldVal, newVal value.Value) AuditEntry {
 	return e
 }
 
-// ---------------------------------------------------------------------------
 // NewAuditEvent creates an Event of TypeAudit from an AuditEntry.
-// ---------------------------------------------------------------------------
-
+//
+//nolint:gocritic // Event is immutable; copying is intentional for builder pattern
 func NewAuditEvent(entry AuditEntry) Event {
 	metadata := map[string]any{
 		"action":   string(entry.Action),

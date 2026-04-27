@@ -180,6 +180,8 @@ func (m *MemoryLoader) Keys() []string {
 
 // notify sends an event to all subscribers. Non-blocking; drops events
 // if subscriber channels are full.
+//
+//nolint:gocritic // event is intentionally passed by value to ensure safe fan-out to subscribers
 func (m *MemoryLoader) notify(evt event.Event) {
 	m.watchMu.Lock()
 	subs := make([]chan event.Event, len(m.subscribers))

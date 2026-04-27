@@ -227,6 +227,8 @@ func NewDiffEvents(diffs []value.DiffEvent, source string) []Event {
 
 // RedactSecrets returns a copy of the Event with secret values redacted.
 // The original Event is not modified.
+//
+//nolint:gocritic // Event is immutable; copying is intentional for builder pattern
 func (e Event) RedactSecrets() Event {
 	redacted := e // shallow copy
 	if value.IsSecret(e.Key) {
@@ -267,11 +269,15 @@ func RedactedDiffEvents(events []Event) []Event {
 // ---------------------------------------------------------------------------
 
 // IsEmpty returns true if the event has no meaningful content.
+//
+//nolint:gocritic // Event is immutable; copying is intentional for builder pattern
 func (e Event) IsEmpty() bool {
 	return e.EventType == 0 && e.Key == "" && e.OldValue.IsZero() && e.NewValue.IsZero()
 }
 
 // String returns a human-readable summary of the event.
+//
+//nolint:gocritic // Event is immutable; copying is intentional for builder pattern
 func (e Event) String() string {
 	var b strings.Builder
 	b.WriteString("[")

@@ -362,6 +362,8 @@ func CorrelationIDMiddleware() Middleware {
 }
 
 // generateCorrelationID creates a correlation ID from command metadata.
+//
+//nolint:gocritic // Command is passed by value intentionally for immutability across middleware
 func generateCorrelationID(cmd Command) string {
 	return fmt.Sprintf("%s-%d", cmd.Operation, time.Now().UnixNano())
 }

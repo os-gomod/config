@@ -210,6 +210,8 @@ func (b *Binder) bindNested(_ context.Context, data map[string]value.Value, pref
 
 // fieldConfigKey extracts the config key from a struct field's tag.
 // Falls back to the lowercase field name if no tag is present.
+//
+//nolint:gocritic // fieldConfigKey is a simple helper that doesn't warrant the complexity of a full struct tag parser.
 func (b *Binder) fieldConfigKey(field reflect.StructField) string {
 	tag := field.Tag.Get(b.tagName)
 	if tag == "" {

@@ -194,6 +194,8 @@ func New(opts ...Option) *Pipeline {
 // Run executes a command through all registered middleware.
 // The middleware chain is rebuilt on each call to support dynamic
 // middleware registration, but a read-lock is used for efficiency.
+//
+//nolint:gocritic // Command is immutable by design; value semantics prevent middleware side-effects
 func (p *Pipeline) Run(ctx context.Context, cmd Command) (Result, error) {
 	handler := p.buildHandler()
 	return handler(ctx, cmd)

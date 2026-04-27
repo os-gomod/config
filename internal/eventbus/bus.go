@@ -273,7 +273,7 @@ func (b *Bus) PublishSync(_ context.Context, evt *event.Event) error {
 
 	var firstErr error
 	for _, sub := range subs {
-		if err := b.deliverSync(*evt, sub); err != nil && firstErr == nil {
+		if err := b.deliverSync(evt, sub); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -282,7 +282,7 @@ func (b *Bus) PublishSync(_ context.Context, evt *event.Event) error {
 
 // deliverSync performs a single synchronous delivery with retry + panic recovery,
 // mirroring the worker logic but without the job channel.
-func (b *Bus) deliverSync(evt event.Event, sub subscription) error {
+func (b *Bus) deliverSync(evt *event.Event, sub subscription) error {
 	var err error
 	for attempt := 0; attempt <= b.config.RetryCount; attempt++ {
 		if attempt > 0 {
@@ -307,7 +307,7 @@ func (b *Bus) deliverSync(evt event.Event, sub subscription) error {
 }
 
 // deliverSafe invokes an observer with panic recovery.
-func (b *Bus) deliverSafe(evt event.Event, sub subscription) (err error) {
+func (b *Bus) deliverSafe(evt *event.Event, sub subscription) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if b.config.PanicHandler != nil {
@@ -317,7 +317,7 @@ func (b *Bus) deliverSafe(evt event.Event, sub subscription) (err error) {
 		}
 	}()
 
-	return sub.observer(b.stopCtx, evt)
+	return sub.observer(b.stopCtx, *evt)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +348,7 @@ func (b *Bus) PublishOrdered(ctx context.Context, events []event.Event) error {
 		}
 
 		for _, sub := range subs {
-			if err := b.deliverSync(events[i], sub); err != nil {
+			if err := b.deliverSync(&events[i], sub); err != nil {
 				return fmt.Errorf("eventbus: ordered publish failed at event[%d].Key=%q: %w", i, events[i].Key, err)
 			}
 		}
