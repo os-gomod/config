@@ -1,3 +1,4 @@
+// Package config provides a high-level API for managing application configuration.
 package config
 
 import (
